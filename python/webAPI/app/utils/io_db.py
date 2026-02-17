@@ -1,5 +1,6 @@
 import os
 import base64
+import logging
 from typing import Optional, Union, Type, List
 from enum import Enum
 import json
@@ -13,6 +14,7 @@ import app.utils.llm_implementation.io_get_vectror_db as io_get_vectror_db
 import app.utils.llm_implementation.io_search_from_db as io_search_from_db
 import app.utils.llm_implementation.io_promt as io_promt
 import app.utils.io_file_operation as io_file_operation
+from app.utils.rag_debug import RagDebugger
 
 from collections import defaultdict
 from app.config import settings_llm, settings
@@ -58,6 +60,8 @@ class DbHelper:
         #self.chat_id = chat_id
         self.user_name = user_name
         self.default_model= default_model
+        self.logger = logging.getLogger("rag.db_helper")
+        self.debugger = RagDebugger(self.logger)
         
     """def process_files(self, user_name):
         copy_user_files_from_input(user_name)
@@ -65,9 +69,8 @@ class DbHelper:
         self.processing_user_files() """
 
     def processing_user_files(self, processing_all_files: Optional[bool]=False, saved_files = []):
-        print("Start processing_user_files")
-        print ("файлов для обработки")
-        print(len(saved_files))
+        self.logger.info("Start processing_user_files")
+        self.logger.info("files to process from save stage: %s", len(saved_files))
         configLLM_object = self.get_configLLM_file()
 
         all_pdf_file_list = self.get_all_user_files()
@@ -84,8 +87,7 @@ class DbHelper:
             user_folder_path = io_file_operation.return_user_folder(self.user_name)
             user_folder_path = os.path.join(user_folder_path, 'pdf') 
             files_to_update = list(map(lambda file: os.path.join(user_folder_path, file), saved_files))
-            print ("файлов для обновления")
-            print(len(files_to_update))
+            self.logger.info("files to reindex: %s", len(files_to_update))
 
         if len(pdf_files_list) == 0 and len(files_to_update) == 0:
             #todo show user error
@@ -98,12 +100,15 @@ class DbHelper:
             separate_text = self.separate_file(file_item)
             embedding = self.get_embeddings()
             self.put_vector_in_db(separate_text, embedding)
+            vectordb = self.get_vectror_db(embedding)
+            records_count = len(vectordb.get().get("ids", [])) if vectordb else None
+            self.debugger.log_indexing(file_item, len(separate_text), records_count)
             #check file as processed
             configLLM_object.processed_files.append(Processed_Files(name=file_item))
     
         #save configLLM
         self.save_to_configLLM_file(configLLM_object)
-        print("finish processing_user_files")
+        self.logger.info("finish processing_user_files")
 
     def get_configLLM_file(self):
         user_folder_path = io_file_operation.return_user_folder(self.user_name)
@@ -166,7 +171,9 @@ class DbHelper:
         class_name_separate_file = settings_llm.CLASS_NAME_SEPARATE_FILE
         separate_class = getattr(io_separate_file, class_name_separate_file)
         separate_object = separate_class(file_path)
-        return separate_object.separate_file()
+        chunks = separate_object.separate_file()
+        self.debugger.log_chunks(chunks, file_path)
+        return chunks
 
     def get_embeddings(self):
 
@@ -193,36 +200,54 @@ class DbHelper:
                 vector_db.delete(ids=doc_id)
             print("Документы успешно удалены!")
 
-    def get_vectror_db(self):
+    def get_vectror_db(self, embedding=None):
 
         class_name_gvidb = settings_llm.CLASS_NAME_GET_VECTOR_DB
         gvidb_class = getattr(io_get_vectror_db, class_name_gvidb)
-        gvid_object = gvidb_class(self.user_name)
+        gvid_object = gvidb_class(self.user_name, embedding)
         return gvid_object.get_vectror_db() 
 
     def get_answer(self, prompt, llm_model: LLM_Models = None):
 
-        print("get_answer")
+        self.logger.info("get_answer")
 
-        vectordb = self.get_vectror_db()
+        embedding = self.get_embeddings()
+        vectordb = self.get_vectror_db(embedding)
 
         llm = self.get_llm(llm_model)
 
-        print("get_answer + llm")
+        self.logger.info("get_answer + llm")
 
         class_name_search = settings_llm.CLASS_NAME_SEARCH
         search_class = getattr(io_search_from_db, class_name_search)
         search_object = search_class(prompt, self.user_name, vectordb)
         data =  search_object.seach_from_db()
+        if isinstance(data, list):
+            normalized = []
+            for item in data:
+                if isinstance(item, dict):
+                    normalized.append(item)
+                else:
+                    normalized.append({
+                        "content": getattr(item, "page_content", ""),
+                        "metadata": getattr(item, "metadata", {}),
+                        "score": None,
+                    })
+            self.debugger.log_retrieval(
+                prompt=prompt,
+                k=int(os.getenv("RAG_RETRIEVAL_K", "5")),
+                filters=None,
+                results=normalized,
+            )
 
-        print("get_answer + io_search_from_db")
+        self.logger.info("get_answer + io_search_from_db")
 
         class_name_promt = settings_llm.CLASS_NAME_PROMT
         promt_class = getattr(io_promt, class_name_promt)
         promt_object = promt_class(data, prompt)
         question  =  promt_object.get_promt()
 
-        print("get_answer + get_promt")
+        self.logger.info("get_answer + get_promt")
 
         text = llm.invoke(question)
 
@@ -233,18 +258,26 @@ class DbHelper:
     
     def get_search_answer(self, prompt, llm_model: LLM_Models = None):
 
-        print("get_search_answer")
+        self.logger.info("get_search_answer")
 
-        vectordb = self.get_vectror_db()
+        embedding = self.get_embeddings()
+        vectordb = self.get_vectror_db(embedding)
 
         llm = self.get_llm(llm_model)
 
-        print("get_search_answer + llm")
+        self.logger.info("get_search_answer + llm")
 
         class_name_search = settings_llm.CLASS_NAME_SEARCH_SEARCH
         search_class = getattr(io_search_from_db, class_name_search)
         search_object = search_class(prompt, self.user_name, vectordb)
         data =  search_object.seach_from_db()
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            self.debugger.log_retrieval(
+                prompt=prompt,
+                k=int(os.getenv("RAG_RETRIEVAL_K", "150")),
+                filters=None,
+                results=data,
+            )
 
         # ✅ Правильная проверка: если data — пустой список или None
         if not data or isinstance(data, dict):
@@ -254,14 +287,14 @@ class DbHelper:
         # Группируем
         grouped = self.group_chunks_by_document(data, "source")
 
-        print("get_search_answer + io_search_from_db")
+        self.logger.info("get_search_answer + io_search_from_db")
 
         class_name_promt = settings_llm.CLASS_NAME_PROMT
         promt_class = getattr(io_promt, class_name_promt)
         promt_object = promt_class(data, prompt)
         question  =  promt_object.get_promt()
 
-        print("get_search_answer + get_promt")
+        self.logger.info("get_search_answer + get_promt")
 
         #text = llm.invoke(question)
         #text = f"filtered_docs: {len(grouped)}"
@@ -411,7 +444,9 @@ class DbHelper:
     
     def get_llm(self, llm_model: LLM_Models = None):
 
-        selected_llm_model = llm_model if llm_model else self.default_model
+        selected_llm_model = llm_model.value if isinstance(llm_model, LLM_Models) else llm_model
+        if selected_llm_model is None:
+            selected_llm_model = self.default_model.value if isinstance(self.default_model, LLM_Models) else self.default_model
 
         encoded_credentials = base64.b64encode(f"{settings_llm.USER_LLM}:{settings_llm.PASSWORD_LLM}".encode()).decode()
         headers = {'Authorization': f'Basic {encoded_credentials}'}
@@ -428,4 +463,3 @@ class DbHelper:
 
         
         
-
