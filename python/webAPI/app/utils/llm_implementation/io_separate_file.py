@@ -7,10 +7,16 @@ import fitz
 from abc import ABC, abstractmethod
 from langchain.docstore.document import Document as LangDocument
 from tabulate import tabulate  # ✅ Импорт добавлен
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+try:
+    from langchain.text_splitter import RecursiveCharacterTextSplitter
+except Exception:
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.docstore.document import Document as LangDocument
 import re
-from langchain.text_splitter import CharacterTextSplitter
+try:
+    from langchain.text_splitter import CharacterTextSplitter
+except Exception:
+    from langchain_text_splitters import CharacterTextSplitter
 
 class sf_default:
     def __init__(self, file_path):

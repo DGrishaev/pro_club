@@ -4,13 +4,18 @@ import os
 
 from langchain_chroma import Chroma
 
-from app.config import settings
+try:
+    from app.config import settings  # type: ignore
+except Exception:
+    settings = None
 
 
 def _resolve_vectorstore_dir(user_name) -> str:
     user_folder_name = user_name if isinstance(user_name, str) else user_name.name
     safe_name = user_folder_name.replace("/", "_").replace("\\", "_")
-    root = settings.MAIN_FOLDER_PATH
+    root = os.getenv("CHROMA_PERSIST_DIR", "./data/chroma")
+    if settings is not None:
+        root = os.getenv("CHROMA_PERSIST_DIR", getattr(settings, "MAIN_FOLDER_PATH", root))
     return os.path.join(root, safe_name, "db")
 
 

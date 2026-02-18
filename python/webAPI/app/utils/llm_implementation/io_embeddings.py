@@ -2,7 +2,10 @@
 # и отображать основные характеристики (по усмотрению разработчика)
 import base64
 
-from app.config import settings_llm
+try:
+    from app.config import settings_llm  # type: ignore
+except Exception:
+    settings_llm = None
 
 
 class e_default:
@@ -47,14 +50,23 @@ class e_remote_ollama:
     def get_embeddings(self):
         from langchain_ollama import OllamaEmbeddings
 
-        model_name = "mxbai-embed-large"
-        encoded_credentials = base64.b64encode(
-            f"{settings_llm.USER_LLM}:{settings_llm.PASSWORD_LLM}".encode()
-        ).decode()
+        import os
+
+        model_name = os.getenv("REMOTE_EMBEDDINGS_MODEL", "mxbai-embed-large")
+        user = os.getenv("REMOTE_AUTH_USER", "")
+        password = os.getenv("REMOTE_AUTH_PASSWORD", "")
+        base_url = os.getenv("REMOTE_EMBEDDINGS_URL", "")
+
+        if settings_llm is not None:
+            user = user or getattr(settings_llm, "USER_LLM", "")
+            password = password or getattr(settings_llm, "PASSWORD_LLM", "")
+            base_url = base_url or getattr(settings_llm, "URL_LLM", "")
+
+        encoded_credentials = base64.b64encode(f"{user}:{password}".encode()).decode()
         headers = {"Authorization": f"Basic {encoded_credentials}"}
 
         return OllamaEmbeddings(
             model=model_name,
-            base_url=settings_llm.URL_LLM,
+            base_url=base_url,
             client_kwargs={"headers": headers},
         )
