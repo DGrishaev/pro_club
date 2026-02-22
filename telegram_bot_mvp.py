@@ -88,7 +88,7 @@ def _pick_class_name(cfg: dict[str, Any], *keys: str) -> str:
 
 
 def _index_file(file_path: Path, user_name: str, cfg: dict[str, Any]) -> dict[str, Any]:
-    from app.utils.llm_implementation import io_embeddings, io_get_vectror_db, io_put_vector_in_db, io_separate_file
+    from python.webAPI.app.utils.llm_implementation import io_embeddings, io_get_vectror_db, io_put_vector_in_db, io_separate_file
 
     separate_name = _pick_class_name(cfg, "class_name_separate_file")
     embed_name = _pick_class_name(cfg, "class_name_embeddings")
@@ -113,7 +113,7 @@ def _index_file(file_path: Path, user_name: str, cfg: dict[str, Any]) -> dict[st
 
 
 def _retrieve_and_answer(question: str, user_name: str, cfg: dict[str, Any], settings: Settings) -> dict[str, Any]:
-    from app.utils.llm_implementation import (
+    from python.webAPI.app.utils.llm_implementation import (
         io_embeddings,
         io_get_vectror_db,
         io_promt,

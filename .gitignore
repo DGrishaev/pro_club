@@ -1385,4 +1385,4 @@ python/webAPI/app/utils/clients.json
 python/webAPI/app/main_api.db
 python/webAPI/app/del_main_api.db
 python/webAPI/main_api.db
-.env.example
+.env
