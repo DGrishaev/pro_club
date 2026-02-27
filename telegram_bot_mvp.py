@@ -76,12 +76,7 @@ def load_settings() -> Settings:
         llm_model=os.getenv("REMOTE_LLM_MODEL", "llama3.1"),
         llm_impl_config=os.getenv("LLM_IMPLEMENTATION_CONFIG", DEFAULT_CONFIG_JSON),
         # Поддерживаем несколько имён переменной для обратной совместимости конфигов.
-        local_upload_dir=(
-            os.getenv("LOCAL_RAG_UPLOAD_DIR")
-            or os.getenv("RAG_UPLOAD_DIR")
-            or os.getenv("UPLOAD_SOURCE_DIR")
-            or ""
-        ).strip()
+        local_upload_dir=(os.getenv("LOCAL_UPLOAD_DIR")).strip()
         or None,
     )
 
