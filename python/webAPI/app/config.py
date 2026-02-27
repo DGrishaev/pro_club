@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     MAIN_FOLDER_PATH: str
     LOGS_FOLDER_PATH: str
 
-    model_config = SettingsConfigDict(env_file="app/.env",
+    model_config = SettingsConfigDict(env_file=".env",
                                       env_file_encoding='utf-8')
 
 class LLM_Settings(BaseSettings):
@@ -48,7 +48,7 @@ class LLM_Settings(BaseSettings):
     USER_LLM: str
     PASSWORD_LLM: str
 
-    model_config = SettingsConfigDict(env_file="app/.env.llm",
+    model_config = SettingsConfigDict(env_file=".env.llm",
                                     env_file_encoding='utf-8')
 
 

@@ -10,6 +10,7 @@ import telebot
 from langchain_ollama import ChatOllama
 
 ENV_FILE = ".env"
+LLM_ENV_FILE = ".env.llm"
 DEFAULT_CONFIG_JSON = "python/webAPI/app/utils/config.json"
 
 
@@ -29,6 +30,7 @@ class Settings:
 
 
 def _load_dotenv(dotenv_path: str = ENV_FILE) -> None:
+    """Загружает пары KEY=VALUE из файла окружения в process env."""
     path = Path(dotenv_path)
     if not path.exists():
         return
@@ -48,11 +50,25 @@ def _required_env(name: str) -> str:
     return value
 
 
+def _resolve_chroma_dir(raw_path: str) -> str:
+    """Преобразует путь к ChromaDB в абсолютный локальный путь.
+
+    Это позволяет хранить базу вне каталога проекта, если путь задан в `.env`.
+    """
+    # Поддерживаем `~` и относительные пути, чтобы пользователь мог указывать путь гибко.
+    return str(Path(raw_path).expanduser().resolve())
+
+
 def load_settings() -> Settings:
-    _load_dotenv()
+    # Сначала читаем базовый `.env`, затем `.env.llm` для настроек LLM/GPU.
+    _load_dotenv(ENV_FILE)
+    _load_dotenv(LLM_ENV_FILE)
+
+    chroma_dir = _resolve_chroma_dir(os.getenv("CHROMA_PERSIST_DIR", "./data/chroma"))
+
     return Settings(
         telegram_bot_token=_required_env("TELEGRAM_BOT_TOKEN"),
-        chroma_persist_dir=os.getenv("CHROMA_PERSIST_DIR", "./data/chroma"),
+        chroma_persist_dir=chroma_dir,
         remote_llm_url=_required_env("REMOTE_LLM_URL"),
         remote_auth_user=_required_env("REMOTE_AUTH_USER"),
         remote_auth_password=_required_env("REMOTE_AUTH_PASSWORD"),
@@ -155,10 +171,11 @@ def run_bot() -> None:
     settings = load_settings()
     _bootstrap_llm_modules()
 
-    os.environ.setdefault("CHROMA_PERSIST_DIR", settings.chroma_persist_dir)
+    # Прокидываем обязательные настройки в нижележащие модули RAG.
+    os.environ["CHROMA_PERSIST_DIR"] = settings.chroma_persist_dir
     os.environ.setdefault("REMOTE_EMBEDDINGS_URL", os.getenv("REMOTE_EMBEDDINGS_URL", settings.remote_llm_url))
-    os.environ.setdefault("REMOTE_AUTH_USER", settings.remote_auth_user)
-    os.environ.setdefault("REMOTE_AUTH_PASSWORD", settings.remote_auth_password)
+    os.environ["REMOTE_AUTH_USER"] = settings.remote_auth_user
+    os.environ["REMOTE_AUTH_PASSWORD"] = settings.remote_auth_password
 
     impl_cfg = _load_impl_config(settings.llm_impl_config)
     Path(settings.chroma_persist_dir).mkdir(parents=True, exist_ok=True)

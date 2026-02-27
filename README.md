@@ -3,9 +3,10 @@
 Минимальный локальный запуск: только Telegram-бот + RAG (локальная Chroma + удалённые embeddings/LLM).
 
 1. `cp .env.example .env`
-2. Заполните `.env` (токен Telegram, URL удалённого GPU, логин/пароль).
-3. `pip install -r requirements.txt`
-4. `python -m telegram_bot_mvp`
+2. Заполните `.env` (токен Telegram, путь `CHROMA_PERSIST_DIR` к локальной внешней папке для ChromaDB).
+3. Заполните `.env.llm` (URL удалённого GPU/Ollama, логин/пароль, модель).
+4. `pip install -r requirements.txt`
+5. `python telegram_bot_mvp.py`
 
 Что проверяется в MVP:
 - бот отвечает на `/start` и принимает файл;
