@@ -41,91 +41,6 @@ class sf_default:
         documents = text_splitter.split_documents(documents)     
         return documents
 
-class sf_DataProcessing:
-    def __init__(self, file_path):
-        self.file_path = file_path
-    def separate_file(self):
-        # from langchain.text_splitter import (
-        #     RecursiveCharacterTextSplitter,
-        # )
-        loader = sfDocumentLoaderFactory.create_loader(self.file_path) 
-        documents = loader.load_documents() 
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=512, chunk_overlap=50) 
-        documents = text_splitter.split_documents(documents)
-        for i, doc in enumerate(documents[:3]):
-            print(f"Чанк {i}: {doc.page_content[:500]}")
-        return documents
-
-class sf_add_keywords_512_chunk:
-    def __init__(self, file_path):
-        self.file_path = file_path
-    def separate_file(self):
-        from langchain_community.document_loaders import PyPDFLoader
-        from langchain_community.document_loaders import Docx2txtLoader
-        from langchain_community.document_loaders import UnstructuredPowerPointLoader
-        # from langchain.text_splitter import (
-        #     RecursiveCharacterTextSplitter,
-        # )
-        # читаем документ
-        basename, extension = os.path.splitext(self.file_path)
-        match extension:
-            case ".docx":
-                print("Statr load docx")
-                loader = Docx2txtLoader(self.file_path)
-            case ".pdf": 
-                print("Statr load pdf") 
-                loader = PyPDFLoader(self.file_path)
-            case ".pptx":
-                print("Statr load pptx")   
-                loader = UnstructuredPowerPointLoader(self.file_path)
-            case _:
-                print(f"Данный файл не поддерживается {self.file_path}")
-                return []
-        documents = loader.load()
-        # Объявляем класс
-        doc_c = get_keywords(documents)
-        # находим слова
-        # ВАЖНО! слова находятся через сеть, необходимо  установить сеть deepseek-r1:latest
-        # или заменить llm_class и llm_keywords
-        keywords = doc_c.get_keywords_def()
-        # в keywords у нас хранятся ключевые слова
-        print (keywords)
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=512, chunk_overlap=100,)
-        chunks = text_splitter.split_documents(documents)
-        # в chunk должна быть итоговый класс, мы просто добавляем в каждый чанк ключевые слова
-        enriched_chunks = [doc_c.enrich_chunk_with_additional_info(chunk, keywords) for chunk in chunks]
-        # и возращаем этот чанк
-        return enriched_chunks
-
-class sf_DataProcessing_keywords_512_chunk:
-    def __init__(self, file_path):
-        self.file_path = file_path
-    def separate_file(self):
-        from langchain_community.document_loaders import PyPDFLoader
-        from langchain_community.document_loaders import Docx2txtLoader
-        # from langchain.text_splitter import (
-        #     RecursiveCharacterTextSplitter,
-        # )
-        # читаем документ
-        # from langchain.text_splitter import (
-        #     RecursiveCharacterTextSplitter,
-        # )
-        loader = sfDocumentLoaderFactory.create_loader(self.file_path) 
-        documents = loader.load_documents() 
-        # Объявляем класс
-        doc_c = get_keywords(documents)
-        # находим слова
-        # ВАЖНО! слова находятся через сеть, необходимо  установить сеть deepseek-r1:latest
-        # или заменить llm_class и llm_keywords
-        keywords = doc_c.get_keywords_def()
-        # в keywords у нас хранятся ключевые слова
-        print (keywords)
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=512, chunk_overlap=100,)
-        chunks = text_splitter.split_documents(documents)
-        # в chunk должна быть итоговый класс, мы просто добавляем в каждый чанк ключевые слова
-        enriched_chunks = [doc_c.enrich_chunk_with_additional_info(chunk, keywords) for chunk in chunks]
-        # и возращаем этот чанк
-        return enriched_chunks
 
 class sf_DataProcessing_keywords_512_chunk_and_Tables:
     def __init__(self, file_path):
@@ -241,43 +156,6 @@ class SmartTextSplitter:
             chunks.append(chunk)
             start += self.default_chunk_size - self.overlap
         return chunks
-    
-# class SmartTextSplitter:
-#     def __init__(self, default_chunk_size=512, overlap=100, table_tag_start="[TABLE_START]", table_tag_end="[TABLE_END]"):
-#         self.default_chunk_size = default_chunk_size
-#         self.overlap = overlap
-#         self.table_tag_start = table_tag_start
-#         self.table_tag_end = table_tag_end
-#         self.default_splitter = RecursiveCharacterTextSplitter(
-#             chunk_size=default_chunk_size,
-#             chunk_overlap=overlap,
-#             separators=["\n\n", "\n", " ", ""]
-#         )
-
-#     def split_documents(self, documents):
-#         """
-#         Принимает список LangDocument (текст и таблицы),
-#         Возвращает список LangDocument, где:
-#           - Таблицы всегда целиком в одном чанке
-#           - Обычный текст делится на части
-#         """
-#         result = []
-#         for doc in documents:
-#             content = doc.page_content
-#             metadata = doc.metadata
-
-#             # Если это таблица — добавляем как есть
-#             if metadata.get("type") == "table" or \
-#                (self.table_tag_start in content and self.table_tag_end in content):
-#                 result.append(doc)
-#             else:
-#                 # Иначе разбиваем на чанки
-#                 chunks = self.default_splitter.split_text(content)
-#                 for i, chunk in enumerate(chunks):
-#                     new_metadata = metadata.copy()
-#                     new_metadata["chunk"] = i
-#                     result.append(LangDocument(page_content=chunk, metadata=new_metadata))
-#         return result
 
 # Фабрика загрузчиков, которая определяет тип файла и возвращает нужный загрузчик
 class sfDocumentLoaderFactory:
