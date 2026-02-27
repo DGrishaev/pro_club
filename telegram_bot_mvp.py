@@ -27,6 +27,7 @@ class Settings:
     remote_auth_password: str
     llm_model: str
     llm_impl_config: str
+    local_upload_dir: str | None
 
 
 def _load_dotenv(dotenv_path: str = ENV_FILE) -> None:
@@ -74,6 +75,14 @@ def load_settings() -> Settings:
         remote_auth_password=_required_env("REMOTE_AUTH_PASSWORD"),
         llm_model=os.getenv("REMOTE_LLM_MODEL", "llama3.1"),
         llm_impl_config=os.getenv("LLM_IMPLEMENTATION_CONFIG", DEFAULT_CONFIG_JSON),
+        # Поддерживаем несколько имён переменной для обратной совместимости конфигов.
+        local_upload_dir=(
+            os.getenv("LOCAL_RAG_UPLOAD_DIR")
+            or os.getenv("RAG_UPLOAD_DIR")
+            or os.getenv("UPLOAD_SOURCE_DIR")
+            or ""
+        ).strip()
+        or None,
     )
 
 
@@ -167,6 +176,57 @@ def _retrieve_and_answer(question: str, user_name: str, cfg: dict[str, Any], set
     return {"answer": answer, "found": found}
 
 
+def _collect_local_upload_files(settings: Settings) -> list[Path]:
+    """Возвращает список файлов из локальной папки для команды `/upload`."""
+    if not settings.local_upload_dir:
+        raise ConfigError(
+            "Не задана папка загрузки. Укажите LOCAL_RAG_UPLOAD_DIR (или RAG_UPLOAD_DIR) в .env."
+        )
+
+    upload_dir = Path(settings.local_upload_dir).expanduser().resolve()
+    if not upload_dir.exists() or not upload_dir.is_dir():
+        raise ConfigError(f"Папка для загрузки не найдена: {upload_dir}")
+
+    # Ограничиваем список поддерживаемыми форматами, чтобы избежать лишних ошибок у пользователя.
+    supported_ext = {".pdf", ".docx", ".pptx"}
+    return sorted(path for path in upload_dir.iterdir() if path.is_file() and path.suffix.lower() in supported_ext)
+
+
+def _clear_user_rag_db(user_name: str, cfg: dict[str, Any]) -> int:
+    """Полностью очищает пользовательскую коллекцию Chroma и возвращает количество удалённых записей."""
+    from python.webAPI.app.utils.llm_implementation import io_embeddings, io_get_vectror_db
+
+    embed_name = _pick_class_name(cfg, "class_name_embeddings")
+    get_name = _pick_class_name(cfg, "class_name_get_vectror_db", "class_name_get_vector_db")
+
+    embedding = getattr(io_embeddings, embed_name)().get_embeddings()
+    vectordb = getattr(io_get_vectror_db, get_name)(user_name, embedding).get_vectror_db()
+
+    all_records = vectordb.get()
+    ids = all_records.get("ids", [])
+    if ids:
+        vectordb.delete(ids=ids)
+    return len(ids)
+
+
+def _get_user_indexed_sources(user_name: str, cfg: dict[str, Any]) -> list[str]:
+    """Возвращает уникальные пути исходных файлов, которые уже были сохранены в Chroma."""
+    from python.webAPI.app.utils.llm_implementation import io_embeddings, io_get_vectror_db
+
+    embed_name = _pick_class_name(cfg, "class_name_embeddings")
+    get_name = _pick_class_name(cfg, "class_name_get_vectror_db", "class_name_get_vector_db")
+
+    embedding = getattr(io_embeddings, embed_name)().get_embeddings()
+    vectordb = getattr(io_get_vectror_db, get_name)(user_name, embedding).get_vectror_db()
+
+    records = vectordb.get(include=["metadatas"])
+    sources: set[str] = set()
+    for metadata in records.get("metadatas", []):
+        if isinstance(metadata, dict) and metadata.get("source"):
+            sources.add(str(metadata["source"]))
+    return sorted(sources)
+
+
 def run_bot() -> None:
     settings = load_settings()
     _bootstrap_llm_modules()
@@ -184,7 +244,77 @@ def run_bot() -> None:
 
     @bot.message_handler(commands=["start", "help"])
     def _start(message):
-        bot.reply_to(message, "MVP бот запущен. Отправьте файл, затем задайте вопрос текстом.")
+        bot.reply_to(
+            message,
+            (
+                "MVP бот запущен.\n"
+                "Команды:\n"
+                "/upload — загрузить в RAG все файлы из локальной папки из .env\n"
+                "/status — показать список уже загруженных файлов\n"
+                "/clear — полностью очистить RAG-базу пользователя\n"
+                "Также можно отправить файл напрямую в чат."
+            ),
+        )
+
+    @bot.message_handler(commands=["upload"])
+    def _upload_from_local_dir(message):
+        """Индексирует все поддерживаемые файлы из локальной папки, указанной в `.env`."""
+        user_name = str(message.from_user.id)
+
+        try:
+            files = _collect_local_upload_files(settings)
+            if not files:
+                bot.reply_to(message, "В папке загрузки нет поддерживаемых файлов (.pdf, .docx, .pptx).")
+                return
+
+            uploaded_count = 0
+            chunks_total = 0
+            last_records_count = 0
+
+            for file_path in files:
+                stats = _index_file(file_path, user_name, impl_cfg)
+                uploaded_count += 1
+                chunks_total += int(stats["chunk_count"])
+                last_records_count = int(stats["records_count"])
+
+            bot.reply_to(
+                message,
+                (
+                    f"Загрузка завершена.\n"
+                    f"Файлов обработано: {uploaded_count}\n"
+                    f"Чанков добавлено: {chunks_total}\n"
+                    f"Записей в Chroma: {last_records_count}"
+                ),
+            )
+        except Exception as exc:
+            bot.reply_to(message, f"Ошибка команды /upload: {exc}")
+
+    @bot.message_handler(commands=["clear"])
+    def _clear_user_db(message):
+        """Очищает всю RAG-базу текущего пользователя."""
+        user_name = str(message.from_user.id)
+
+        try:
+            deleted_count = _clear_user_rag_db(user_name, impl_cfg)
+            bot.reply_to(message, f"База очищена. Удалено записей: {deleted_count}.")
+        except Exception as exc:
+            bot.reply_to(message, f"Ошибка команды /clear: {exc}")
+
+    @bot.message_handler(commands=["status"])
+    def _status_user_db(message):
+        """Показывает список файлов, которые уже участвуют в RAG у пользователя."""
+        user_name = str(message.from_user.id)
+
+        try:
+            sources = _get_user_indexed_sources(user_name, impl_cfg)
+            if not sources:
+                bot.reply_to(message, "В базе пока нет загруженных документов.")
+                return
+
+            pretty_list = "\n".join(f"{idx}. {Path(src).name}" for idx, src in enumerate(sources, start=1))
+            bot.reply_to(message, f"Загруженные документы ({len(sources)}):\n{pretty_list}")
+        except Exception as exc:
+            bot.reply_to(message, f"Ошибка команды /status: {exc}")
 
     @bot.message_handler(content_types=["document"])
     def _handle_document(message):
