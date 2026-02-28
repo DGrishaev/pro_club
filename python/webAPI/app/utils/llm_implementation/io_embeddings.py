@@ -58,9 +58,9 @@ class e_remote_ollama:
         base_url = os.getenv("REMOTE_EMBEDDINGS_URL", "")
 
         if settings_llm is not None:
-            user = user or getattr(settings_llm, "USER_LLM", "")
-            password = password or getattr(settings_llm, "PASSWORD_LLM", "")
-            base_url = base_url or getattr(settings_llm, "URL_LLM", "")
+            user = user or getattr(settings_llm, "REMOTE_AUTH_USER", "")
+            password = password or getattr(settings_llm, "REMOTE_AUTH_PASSWORD", "")
+            base_url = base_url or getattr(settings_llm, "REMOTE_LLM_URL", "")
 
         encoded_credentials = base64.b64encode(f"{user}:{password}".encode()).decode()
         headers = {"Authorization": f"Basic {encoded_credentials}"}

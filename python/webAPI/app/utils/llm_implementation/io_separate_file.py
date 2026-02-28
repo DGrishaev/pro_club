@@ -481,13 +481,23 @@ class get_keywords:
             {}
         )
     }
-    encoded_credentials = base64.b64encode(f"{settings_llm.USER_LLM}:{settings_llm.PASSWORD_LLM}".encode()).decode()
+    encoded_credentials = base64.b64encode(
+        f"{settings_llm.REMOTE_AUTH_USER}:{settings_llm.REMOTE_AUTH_PASSWORD}".encode()
+    ).decode()
     headers = {'Authorization': f'Basic {encoded_credentials}'}
     X_char = 1000
-    llm_class = OllamaLLM( 
-                model="gemma3:12b", temperature = 0.1, base_url=settings_llm.URL_LLM, client_kwargs={'headers': headers})
-    llm_keywords = OllamaLLM( 
-                model="gemma3:12b", temperature = 0.0, base_url=settings_llm.URL_LLM, client_kwargs={'headers': headers})
+    llm_class = OllamaLLM(
+        model="gemma3:12b",
+        temperature=0.1,
+        base_url=settings_llm.REMOTE_LLM_URL,
+        client_kwargs={'headers': headers},
+    )
+    llm_keywords = OllamaLLM(
+        model="gemma3:12b",
+        temperature=0.0,
+        base_url=settings_llm.REMOTE_LLM_URL,
+        client_kwargs={'headers': headers},
+    )
     def __init__(self, documents: List[LangDocument]):
         self.documents = documents
     def remove_text_between_tags(self, text: str):

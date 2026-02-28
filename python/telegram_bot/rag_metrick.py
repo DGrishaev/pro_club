@@ -14,10 +14,10 @@ dotenv_path = os.path.join(os.path.dirname(__file__), '..', 'webAPI', 'app', '.e
 dotenv_path = os.path.abspath(dotenv_path)
 load_dotenv(dotenv_path)
 
-user_llm = os.getenv('USER_LLM')
-password = os.getenv('PASSWORD_LLM')
-model_llm = os.getenv('MODEL')
-url_llm = os.getenv('URL_LLM')
+user_llm = os.getenv('REMOTE_AUTH_USER')
+password = os.getenv('REMOTE_AUTH_PASSWORD')
+model_llm = os.getenv('REMOTE_LLM_MODEL')
+url_llm = os.getenv('REMOTE_LLM_URL')
 
 encoded_credentials = base64.b64encode(f"{user_llm}:{password}".encode()).decode()
 headers = {'Authorization': f'Basic {encoded_credentials}'}

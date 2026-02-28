@@ -448,7 +448,9 @@ class DbHelper:
         if selected_llm_model is None:
             selected_llm_model = self.default_model.value if isinstance(self.default_model, LLM_Models) else self.default_model
 
-        encoded_credentials = base64.b64encode(f"{settings_llm.USER_LLM}:{settings_llm.PASSWORD_LLM}".encode()).decode()
+        encoded_credentials = base64.b64encode(
+            f"{settings_llm.REMOTE_AUTH_USER}:{settings_llm.REMOTE_AUTH_PASSWORD}".encode()
+        ).decode()
         headers = {'Authorization': f'Basic {encoded_credentials}'}
         
         if LLM_Models.Olama3.value == "gigachat":
@@ -456,8 +458,12 @@ class DbHelper:
             gigachat_key = settings.GIGACHAT_TOKEN
             llm = GigaChat(credentials=gigachat_key, verify_ssl_certs=False,)
         else:
-            llm = OllamaLLM( 
-                model=selected_llm_model, temperature = 0.1, base_url=settings_llm.URL_LLM, client_kwargs={'headers': headers})
+            llm = OllamaLLM(
+                model=selected_llm_model,
+                temperature=0.1,
+                base_url=settings_llm.REMOTE_LLM_URL,
+                client_kwargs={'headers': headers},
+            )
         
         return llm
 
