@@ -5,19 +5,12 @@ pd.set_option('future.no_silent_downcasting', True)
 import os, re, inspect
 import fitz
 from abc import ABC, abstractmethod
-from typing import Optional
 from langchain.docstore.document import Document as LangDocument
 from tabulate import tabulate  # ✅ Импорт добавлен
-try:
-    from langchain.text_splitter import RecursiveCharacterTextSplitter
-except Exception:
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.docstore.document import Document as LangDocument
 import re
-try:
-    from langchain.text_splitter import CharacterTextSplitter
-except Exception:
-    from langchain_text_splitters import CharacterTextSplitter
+from langchain.text_splitter import CharacterTextSplitter
 
 class sf_default:
     def __init__(self, file_path):
@@ -42,86 +35,142 @@ class sf_default:
         documents = text_splitter.split_documents(documents)     
         return documents
 
+class sf_DataProcessing:
+    def __init__(self, file_path):
+        self.file_path = file_path
+    def separate_file(self):
+        # from langchain.text_splitter import (
+        #     RecursiveCharacterTextSplitter,
+        # )
+        loader = sfDocumentLoaderFactory.create_loader(self.file_path) 
+        documents = loader.load_documents() 
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=512, chunk_overlap=50) 
+        documents = text_splitter.split_documents(documents)
+        for i, doc in enumerate(documents[:3]):
+            print(f"Чанк {i}: {doc.page_content[:500]}")
+        return documents
+
+class sf_add_keywords_512_chunk:
+    def __init__(self, file_path):
+        self.file_path = file_path
+    def separate_file(self):
+        from langchain_community.document_loaders import PyPDFLoader
+        from langchain_community.document_loaders import Docx2txtLoader
+        from langchain_community.document_loaders import UnstructuredPowerPointLoader
+        # from langchain.text_splitter import (
+        #     RecursiveCharacterTextSplitter,
+        # )
+        # читаем документ
+        basename, extension = os.path.splitext(self.file_path)
+        match extension:
+            case ".docx":
+                print("Statr load docx")
+                loader = Docx2txtLoader(self.file_path)
+            case ".pdf": 
+                print("Statr load pdf") 
+                loader = PyPDFLoader(self.file_path)
+            case ".pptx":
+                print("Statr load pptx")   
+                loader = UnstructuredPowerPointLoader(self.file_path)
+            case _:
+                print(f"Данный файл не поддерживается {self.file_path}")
+                return []
+        documents = loader.load()
+        # Объявляем класс
+        doc_c = get_keywords(documents)
+        # находим слова
+        # ВАЖНО! слова находятся через сеть, необходимо  установить сеть deepseek-r1:latest
+        # или заменить llm_class и llm_keywords
+        keywords = doc_c.get_keywords_def()
+        # в keywords у нас хранятся ключевые слова
+        print (keywords)
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=512, chunk_overlap=100,)
+        chunks = text_splitter.split_documents(documents)
+        # в chunk должна быть итоговый класс, мы просто добавляем в каждый чанк ключевые слова
+        enriched_chunks = [doc_c.enrich_chunk_with_additional_info(chunk, keywords) for chunk in chunks]
+        # и возращаем этот чанк
+        return enriched_chunks
+
+class sf_DataProcessing_keywords_512_chunk:
+    def __init__(self, file_path):
+        self.file_path = file_path
+    def separate_file(self):
+        from langchain_community.document_loaders import PyPDFLoader
+        from langchain_community.document_loaders import Docx2txtLoader
+        # from langchain.text_splitter import (
+        #     RecursiveCharacterTextSplitter,
+        # )
+        # читаем документ
+        # from langchain.text_splitter import (
+        #     RecursiveCharacterTextSplitter,
+        # )
+        loader = sfDocumentLoaderFactory.create_loader(self.file_path) 
+        documents = loader.load_documents() 
+        # Объявляем класс
+        doc_c = get_keywords(documents)
+        # находим слова
+        # ВАЖНО! слова находятся через сеть, необходимо  установить сеть deepseek-r1:latest
+        # или заменить llm_class и llm_keywords
+        keywords = doc_c.get_keywords_def()
+        # в keywords у нас хранятся ключевые слова
+        print (keywords)
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=512, chunk_overlap=100,)
+        chunks = text_splitter.split_documents(documents)
+        # в chunk должна быть итоговый класс, мы просто добавляем в каждый чанк ключевые слова
+        enriched_chunks = [doc_c.enrich_chunk_with_additional_info(chunk, keywords) for chunk in chunks]
+        # и возращаем этот чанк
+        return enriched_chunks
 
 class sf_DataProcessing_keywords_512_chunk_and_Tables:
-    """Точка входа обработки файлов с таблицами и ключевыми словами поверх чанков."""
-
-    def __init__(self, file_path: str, splitter: Optional["SmartTextSplitter"] = None):
+    def __init__(self, file_path):
         self.file_path = file_path
-        self.splitter = splitter or SmartTextSplitter(default_chunk_size=512, overlap=100)
-
-    def separate_file(self) -> list[LangDocument]:
-        """Запускает полный конвейер: загрузка → проверка → ключевые слова → чанки → обогащение."""
-        documents = self._load_documents()
-        documents = self._ensure_documents(documents)
-        if self._contains_only_error(documents):
-            return documents
-
-        keywords, enricher = self._extract_keywords(documents)
-        chunks = self._split_documents(documents)
-        return self._enrich_chunks(chunks, keywords, enricher)
-
-    def _load_documents(self) -> list[LangDocument]:
-        """Загружает документы, определяя загрузчик через фабрику."""
-        try:
-            loader = sfDocumentLoaderFactory.create_loader(self.file_path)
-        except ValueError as error:
-            print(f"[sf_DataProcessing] Неподдерживаемый формат: {error}")
-            return []
-        try:
-            return loader.load_documents()
-        except Exception as error:
-            print(f"[sf_DataProcessing] Ошибка загрузки {self.file_path}: {error}")
-            return []
-
-    def _ensure_documents(self, documents: list[LangDocument]) -> list[LangDocument]:
-        """Гарантирует, что у нас есть хотя бы один документ, иначе возвращает техническую заглушку."""
-        if documents:
-            return documents
-        return [
-            LangDocument(
-                page_content="ERROR: файл содержит только изображения или не содержит текста",
-                metadata={
-                    "source": self.file_path,
-                    "type": "error",
-                    "error": "no_text_or_tables",
-                },
-            )
-        ]
-
-    def _contains_only_error(self, documents: list[LangDocument]) -> bool:
-        """Проверяет, что список документов содержит только сообщение об ошибке."""
-        return (
-            len(documents) == 1
-            and documents[0].metadata.get("type") == "error"
+    def separate_file(self):
+        from langchain.text_splitter import (
+            RecursiveCharacterTextSplitter,
         )
-
-    def _extract_keywords(self, documents: list[LangDocument]) -> tuple[str, "get_keywords"]:
-        """Получает ключевые слова через Ollama и возвращает объект обогащения."""
+        # читаем документ
+        # from langchain.text_splitter import (
+        #     RecursiveCharacterTextSplitter,
+        # )
+        loader = sfDocumentLoaderFactory.create_loader(self.file_path) 
+        documents = loader.load_documents() 
+        print("Данные documents")
+        print(len(documents))
+        if len(documents) == 0:
+            documents =  [LangDocument(
+                    page_content="ERROR: файл содержит только изображения или не содержит текста",
+                    metadata={"source": self.file_path, "type": "error", "error": "no_text_or_tables"})]
+        # # Объявляем класс
         doc_c = get_keywords(documents)
+        # # находим слова
+        # # ВАЖНО! слова находятся через сеть, необходимо  установить сеть deepseek-r1:latest
+        # # или заменить llm_class и llm_keywords
         keywords = doc_c.get_keywords_def()
-        print(f"[sf_DataProcessing] Найденные ключевые слова: {keywords}")
-        return keywords, doc_c
+        # # в keywords у нас хранятся ключевые слова
+        print (keywords)
 
-    def _split_documents(self, documents: list[LangDocument]) -> list[LangDocument]:
-        """Разбивает документы на чанки с учётом таблиц."""
-        chunks = self.splitter.split_documents(documents)
-        if not chunks:
-            print("[sf_DataProcessing] После разбиения нет чанков, возвращаем исходные документы.")
-            return documents
-        return chunks
+        # text_splitter = RecursiveCharacterTextSplitter(chunk_size=512, chunk_overlap=100,)
+        # chunks = text_splitter.split_documents(documents)
+        # chunks = fix_broken_tables(chunks)
 
-    def _enrich_chunks(
-        self,
-        chunks: list[LangDocument],
-        keywords: str,
-        enricher: "get_keywords",
-    ) -> list[LangDocument]:
-        """Добавляет ключевые слова к каждому чанку."""
-        return [
-            enricher.enrich_chunk_with_additional_info(chunk, keywords)
-            for chunk in chunks
-        ]
+        # Создаём умный сплиттер
+        splitter = SmartTextSplitter(default_chunk_size=512)
+
+        # Разбиваем документы
+        chunks = splitter.split_documents(documents)
+
+        # в chunk должна быть итоговый класс, мы просто добавляем в каждый чанк ключевые слова
+        #enriched_chunks = [doc_c.enrich_chunk_with_additional_info(chunk, keywords) for chunk in chunks]
+        # ...existing code...
+        # в chunk должна быть итоговый класс, мы просто добавляем в каждый чанк ключевые слова
+        enriched_chunks = []
+        for i, chunk in enumerate(chunks):
+            #print(f"[LOG] Чанк {i}: {chunk.page_content[:1500]}")  # Логируем первые 500 символов чанка
+            enriched_chunk = doc_c.enrich_chunk_with_additional_info(chunk, keywords)
+            enriched_chunks.append(enriched_chunk)
+        # ...existing code...
+        # и возращаем этот чанк
+        return enriched_chunks
 
 ################################
 ################################ Вспомогательные классы
@@ -186,6 +235,43 @@ class SmartTextSplitter:
             chunks.append(chunk)
             start += self.default_chunk_size - self.overlap
         return chunks
+    
+# class SmartTextSplitter:
+#     def __init__(self, default_chunk_size=512, overlap=100, table_tag_start="[TABLE_START]", table_tag_end="[TABLE_END]"):
+#         self.default_chunk_size = default_chunk_size
+#         self.overlap = overlap
+#         self.table_tag_start = table_tag_start
+#         self.table_tag_end = table_tag_end
+#         self.default_splitter = RecursiveCharacterTextSplitter(
+#             chunk_size=default_chunk_size,
+#             chunk_overlap=overlap,
+#             separators=["\n\n", "\n", " ", ""]
+#         )
+
+#     def split_documents(self, documents):
+#         """
+#         Принимает список LangDocument (текст и таблицы),
+#         Возвращает список LangDocument, где:
+#           - Таблицы всегда целиком в одном чанке
+#           - Обычный текст делится на части
+#         """
+#         result = []
+#         for doc in documents:
+#             content = doc.page_content
+#             metadata = doc.metadata
+
+#             # Если это таблица — добавляем как есть
+#             if metadata.get("type") == "table" or \
+#                (self.table_tag_start in content and self.table_tag_end in content):
+#                 result.append(doc)
+#             else:
+#                 # Иначе разбиваем на чанки
+#                 chunks = self.default_splitter.split_text(content)
+#                 for i, chunk in enumerate(chunks):
+#                     new_metadata = metadata.copy()
+#                     new_metadata["chunk"] = i
+#                     result.append(LangDocument(page_content=chunk, metadata=new_metadata))
+#         return result
 
 # Фабрика загрузчиков, которая определяет тип файла и возвращает нужный загрузчик
 class sfDocumentLoaderFactory:
@@ -253,11 +339,24 @@ class sfDOCXLoader(sfBaseDocumentLoader):
                     blocks.append(('paragraph', text))
             elif tag == 'tbl':
                 tbl = Table(child, doc)
+                headers = []
                 rows = []
-                for row in tbl.rows:
+                for i, row in enumerate(tbl.rows):
                     cells = [self.clean_text(cell.text) for cell in row.cells]
-                    rows.append(cells)
-                blocks.append(('table', rows))
+                    if i == 0:
+                        headers = cells  # Первая строка — заголовки
+                    else:
+                        rows.append(cells)
+                if not headers or not rows:
+                    continue
+
+                # Преобразуем в Markdown-таблицу
+                markdown_table = tabulate(rows, headers=headers, tablefmt='github')
+
+                # Добавляем разделители, чтобы таблица не разрывалась на чанки
+                full_table = "[TABLE_START]\n" + markdown_table + "\n[TABLE_END]"
+
+                blocks.append(('table', full_table))
         return blocks
 
     def extract_tables(self):
@@ -302,20 +401,34 @@ class sfDOCXLoader(sfBaseDocumentLoader):
 
             # Список для хранения обычного текста
             current_text = []
-            table_idx = 1
 
             for kind, text in blocks:
                 if kind == "table":
-                    self._flush_paragraph_chunk(docs, current_text)
-                    current_text = []
-                    table_doc = self._build_table_document(text, table_idx)
-                    if table_doc:
-                        docs.append(table_doc)
-                        table_idx += 1
+                    # Если был накопленный текст — добавляем его как отдельный документ
+                    if current_text:
+                        full_text = "\n".join(current_text)
+                        docs.append(LangDocument(
+                            page_content=full_text,
+                            metadata={"source": os.path.basename(self.file_path), "type": "paragraph"}
+                        ))
+                        current_text = []
+
+                    # Добавляем таблицу как отдельный документ
+                    docs.append(LangDocument(
+                        page_content=text,
+                        metadata={"source": os.path.basename(self.file_path), "type": "table"}
+                    ))
                 else:
+                    # Накапливаем обычный текст
                     current_text.append(text)
 
-            self._flush_paragraph_chunk(docs, current_text)
+            # Не забываем про оставшийся текст после последней таблицы
+            if current_text:
+                full_text = "\n".join(current_text)
+                docs.append(LangDocument(
+                    page_content=full_text,
+                    metadata={"source": os.path.basename(self.file_path), "type": "paragraph"}
+                ))
 
         except Exception as e:
             print(f"Ошибка при загрузке документа: {e}")
@@ -324,49 +437,6 @@ class sfDOCXLoader(sfBaseDocumentLoader):
                 metadata={"source": self.file_path, "type": "error", "error": "no_text_or_tables"})]
 
         return docs
-
-    def _flush_paragraph_chunk(self, docs: list, current_text: list):
-        """Сохраняет накопленный текст как отдельный документ."""
-        if not current_text:
-            return
-        full_text = "\n".join(current_text)
-        docs.append(
-            LangDocument(
-                page_content=full_text,
-                metadata={
-                    "source": os.path.basename(self.file_path),
-                    "type": "paragraph",
-                },
-            )
-        )
-
-    def _build_table_document(self, raw_rows: list[list[str]], table_idx: int):
-        """Преобразует сырые данные таблицы в Markdown с корректными метаданными."""
-        rows = [row for row in raw_rows if any(cell for cell in row)]
-        if not rows:
-            return None
-
-        if len(rows) == 1:
-            markdown = tabulate(rows, headers="firstrow", tablefmt="github")
-            header_len = len(rows[0])
-            row_count = 1
-        else:
-            headers = rows[0]
-            data_rows = rows[1:] or [["" for _ in headers]]
-            markdown = tabulate(data_rows, headers=headers, tablefmt="github")
-            header_len = len(headers)
-            row_count = len(rows)
-
-        content = f"[TABLE_START]\nТаблица {table_idx}:\n{markdown}\n[TABLE_END]"
-        return LangDocument(
-            page_content=content,
-            metadata={
-                "source": os.path.basename(self.file_path),
-                "type": "table",
-                "rows": row_count,
-                "cols": header_len,
-            },
-        )
 
 class sfPDFLoader(sfBaseDocumentLoader):
     def __init__(
@@ -427,6 +497,7 @@ class sfPDFLoader(sfBaseDocumentLoader):
         return headers_set, footers_set
 
     def load_documents(self) -> list[LangDocument]:
+        import camelot
         docs: list[LangDocument] = []
         pdf = fitz.open(self.file_path)
         file_name = os.path.basename(self.file_path)
@@ -434,135 +505,76 @@ class sfPDFLoader(sfBaseDocumentLoader):
         table_idx = 1
         for page in pdf:
             page_id = page.number + 1
-            table_entries = self._extract_tables_for_page(page_id)
-            table_rects = [entry["rect"] for entry in table_entries]
-            text_parts = self._collect_page_text(page, table_rects, hdr_set, ftr_set)
-
+            try:
+                tables = camelot.read_pdf(
+                    self.file_path,
+                    pages=str(page_id),
+                    flavor=self.flavor,
+                    strip_text="\n",
+                    split_text=True,
+                    edge_tol=200,
+                    row_tol=5,
+                )
+            except Exception as e:
+                print(f"[Camelot] ошибка при разборке {page_id}: {e}")
+                tables = []
+            tbl_rects: list[fitz.Rect] = []
+            for t in tables:
+                tbl_rects.append(self._bbox_to_rect(t._bbox))
+            try:
+                blocks = page.get_text("blocks")
+                text_parts: list[str] = []
+                for x0, y0, x1, y1, txt, *_ in blocks:
+                    rect = fitz.Rect(x0, y0, x1, y1)
+                    if not txt.strip():
+                        continue
+                    if page_id != 1 and any(
+                        self._norm(line) in hdr_set or self._norm(line) in ftr_set
+                        for line in txt.splitlines()
+                        if line.strip()
+                    ):
+                        continue
+                    text_parts.append(txt)
+            except Exception as e:
+                print(e)
             if text_parts:
                 para_text = self._clean("\n".join(text_parts))
-                if para_text:
-                    is_guess = ("\t" in para_text and para_text.count("\t") >= 3) or (
-                        "..." in para_text and para_text.count("...") >= 5
+                is_guess = ("\t" in para_text and para_text.count("\t") >= 3) \
+                            or ("..." in para_text and para_text.count("...") >= 5)
+                docs.append(
+                    LangDocument(
+                        page_content=para_text,
+                        metadata={
+                            "source": file_name,
+                            "type": "table_guess" if is_guess else "paragraph",
+                            "page": page_id,
+                        },
                     )
-                    docs.append(
-                        LangDocument(
-                            page_content=para_text,
-                            metadata={
-                                "source": file_name,
-                                "type": "table_guess" if is_guess else "paragraph",
-                                "page": page_id,
-                            },
-                        )
+                )
+            tables = tables or []
+            table_order = sorted(zip(tbl_rects, tables), key=lambda p: p[0].y0)
+            for rect, table in table_order:
+                if table.df.shape[0] < 3 or table.df.shape[1] < 2:
+                    continue
+                first_cell_norm = self._norm(table.df.iloc[0, 0])
+                # ✅ Изменение: таблица в формате Markdown внутри разделителя
+                markdown_table = tabulate(table.df.values.tolist(), headers=table.df.columns.tolist(), tablefmt="github")
+                content = f"[TABLE_START]\nТаблица {table_idx}:\n{markdown_table}\n[TABLE_END]"
+                docs.append(
+                    LangDocument(
+                        page_content=content,
+                        metadata={
+                            "source": file_name,
+                            "type": "table",
+                            "page": page_id,
+                            "rows": table.df.shape[0],
+                            "cols": table.df.shape[1],
+                        },
                     )
-
-            for entry in sorted(table_entries, key=lambda item: item["rect"].y0):
-                table_doc = self._build_pdf_table_document(entry["table"], table_idx, page_id)
-                if table_doc:
-                    docs.append(table_doc)
-                    table_idx += 1
+                )
+                table_idx += 1
         pdf.close()
         return docs
-
-    def _extract_tables_for_page(self, page_id: int) -> list[dict]:
-        """Читает таблицы на странице и хранит их геометрию для последующей фильтрации текста."""
-        import camelot
-
-        try:
-            tables = camelot.read_pdf(
-                self.file_path,
-                pages=str(page_id),
-                flavor=self.flavor,
-                strip_text="\n",
-                split_text=True,
-                edge_tol=200,
-                row_tol=5,
-            )
-        except Exception as error:
-            print(f"[Camelot] ошибка при разборке страницы {page_id}: {error}")
-            return []
-
-        entries = []
-        for table in tables or []:
-            entries.append({"rect": self._bbox_to_rect(table._bbox), "table": table})
-        return entries
-
-    def _collect_page_text(
-        self,
-        page: fitz.Page,
-        table_rects: list[fitz.Rect],
-        hdr_set: set[str],
-        ftr_set: set[str],
-    ) -> list[str]:
-        """Убирает из текстовых блоков заголовки/футеры и дубли таблиц."""
-        try:
-            blocks = page.get_text("blocks")
-        except Exception as error:
-            print(f"[PDF] ошибка чтения блоков: {error}")
-            return []
-
-        text_parts: list[str] = []
-        page_id = page.number + 1
-        for x0, y0, x1, y1, txt, *_ in blocks:
-            rect = fitz.Rect(x0, y0, x1, y1)
-            if not txt.strip():
-                continue
-            if self._overlaps_table(rect, table_rects):
-                continue
-            if self._is_header_footer_block(txt, hdr_set, ftr_set, page_id):
-                continue
-            text_parts.append(txt)
-        return text_parts
-
-    def _is_header_footer_block(
-        self, text: str, hdr_set: set[str], ftr_set: set[str], page_id: int
-    ) -> bool:
-        """Проверяет, принадлежит ли блок повторяющемуся хедеру или футеру."""
-        if page_id == 1:
-            return False
-        for line in text.splitlines():
-            norm_line = self._norm(line)
-            if norm_line and (norm_line in hdr_set or norm_line in ftr_set):
-                return True
-        return False
-
-    @staticmethod
-    def _overlaps_table(rect: fitz.Rect, table_rects: list[fitz.Rect]) -> bool:
-        """Возвращает True, если текстовый блок пересекается с таблицей."""
-        return any(rect.intersects(tbl_rect) for tbl_rect in table_rects)
-
-    def _build_pdf_table_document(self, table, table_idx: int, page_id: int):
-        """Конвертирует таблицу Camelot в Markdown с корректными метаданными."""
-        rows = table.df.values.tolist()
-        cleaned_rows = [
-            [self._clean(str(cell)) for cell in row]
-            for row in rows
-            if any(str(cell).strip() for cell in row)
-        ]
-        if not cleaned_rows:
-            return None
-
-        if len(cleaned_rows) == 1:
-            markdown = tabulate(cleaned_rows, headers="firstrow", tablefmt="github")
-            header_len = len(cleaned_rows[0])
-            row_count = 1
-        else:
-            headers = cleaned_rows[0]
-            data_rows = cleaned_rows[1:] or [["" for _ in headers]]
-            markdown = tabulate(data_rows, headers=headers, tablefmt="github")
-            header_len = len(headers)
-            row_count = len(cleaned_rows)
-
-        content = f"[TABLE_START]\nТаблица {table_idx} (стр. {page_id}):\n{markdown}\n[TABLE_END]"
-        return LangDocument(
-            page_content=content,
-            metadata={
-                "source": os.path.basename(self.file_path),
-                "type": "table",
-                "page": page_id,
-                "rows": row_count,
-                "cols": header_len,
-            },
-        )
 
 class sfPPTXLoader(sfBaseDocumentLoader):
     def __init__(self, file_path: str):
