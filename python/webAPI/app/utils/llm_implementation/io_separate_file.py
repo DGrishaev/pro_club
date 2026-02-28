@@ -8,6 +8,11 @@ from abc import ABC, abstractmethod
 from langchain_core.documents import Document as LangDocument
 from tabulate import tabulate
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from app.utils.rag_artifacts import (
+    rag_artifacts,
+    serialize_documents,
+    combine_page_content,
+)
 
 
 class sf_DataProcessing_keywords_512_chunk_and_Tables:
@@ -17,49 +22,60 @@ class sf_DataProcessing_keywords_512_chunk_and_Tables:
         from langchain_text_splitters import (
             RecursiveCharacterTextSplitter,
         )
-        # читаем документ
-        # from langchain.text_splitter import (
-        #     RecursiveCharacterTextSplitter,
-        # )
-        loader = sfDocumentLoaderFactory.create_loader(self.file_path) 
-        documents = loader.load_documents() 
-        print("Данные documents")
-        print(len(documents))
-        if len(documents) == 0:
-            documents =  [LangDocument(
-                    page_content="ERROR: файл содержит только изображения или не содержит текста",
-                    metadata={"source": self.file_path, "type": "error", "error": "no_text_or_tables"})]
-        # # Объявляем класс
-        doc_c = get_keywords(documents)
-        # # находим слова
-        # # ВАЖНО! слова находятся через сеть, необходимо  установить сеть deepseek-r1:latest
-        # # или заменить llm_class и llm_keywords
-        keywords = doc_c.get_keywords_def()
-        # # в keywords у нас хранятся ключевые слова
-        print (keywords)
-
-        # text_splitter = RecursiveCharacterTextSplitter(chunk_size=512, chunk_overlap=100,)
-        # chunks = text_splitter.split_documents(documents)
-        # chunks = fix_broken_tables(chunks)
-
-        # Создаём умный сплиттер
-        splitter = SmartTextSplitter(default_chunk_size=512)
-
-        # Разбиваем документы
-        chunks = splitter.split_documents(documents)
-
-        # в chunk должна быть итоговый класс, мы просто добавляем в каждый чанк ключевые слова
-        #enriched_chunks = [doc_c.enrich_chunk_with_additional_info(chunk, keywords) for chunk in chunks]
-        # ...existing code...
-        # в chunk должна быть итоговый класс, мы просто добавляем в каждый чанк ключевые слова
-        enriched_chunks = []
-        for i, chunk in enumerate(chunks):
-            #print(f"[LOG] Чанк {i}: {chunk.page_content[:1500]}")  # Логируем первые 500 символов чанка
-            enriched_chunk = doc_c.enrich_chunk_with_additional_info(chunk, keywords)
-            enriched_chunks.append(enriched_chunk)
-        # ...existing code...
-        # и возращаем этот чанк
-        return enriched_chunks
+        diag_enabled = rag_artifacts.has_session("UP")
+        # сохраняем артефакты только когда DEBUG_RAG включен
+        try:
+            loader = sfDocumentLoaderFactory.create_loader(self.file_path)
+            if diag_enabled:
+                # фиксируем исходный файл и базовую информацию о загрузчике
+                rag_artifacts.copy_file("UP", "input", self.file_path)
+                rag_artifacts.write_json(
+                    "UP",
+                    "meta",
+                    "document_meta.json",
+                    {
+                        "file_path": self.file_path,
+                        "loader_class": loader.__class__.__name__,
+                    },
+                )
+            documents = loader.load_documents()
+            print("Данные documents")
+            print(len(documents))
+            if diag_enabled:
+                # сохраняем результат парсинга до разбиения на чанки
+                rag_artifacts.write_json("UP", "parsed", "documents.json", serialize_documents(documents))
+                rag_artifacts.write_text("UP", "parsed", "raw_text.txt", combine_page_content(documents))
+            if len(documents) == 0:
+                documents = [
+                    LangDocument(
+                        page_content="ERROR: файл содержит только изображения или не содержит текста",
+                        metadata={"source": self.file_path, "type": "error", "error": "no_text_or_tables"},
+                    )
+                ]
+            doc_c = get_keywords(documents)
+            keywords = doc_c.get_keywords_def()
+            print(keywords)
+            splitter = SmartTextSplitter(default_chunk_size=512)
+            chunks = splitter.split_documents(documents)
+            enriched_chunks = []
+            for i, chunk in enumerate(chunks):
+                enriched_chunk = doc_c.enrich_chunk_with_additional_info(chunk, keywords)
+                enriched_chunks.append(enriched_chunk)
+            if diag_enabled:
+                # сохраняем полные чанки без усечения для ручной проверки
+                rag_artifacts.write_json("UP", "chunks", "chunks.json", serialize_documents(enriched_chunks))
+                rag_artifacts.write_text("UP", "chunks", "chunks.txt", combine_page_content(enriched_chunks))
+            return enriched_chunks
+        except Exception as exc:
+            if diag_enabled:
+                # пробрасываем исключение после сохранения стека
+                rag_artifacts.log_exception(
+                    "UP",
+                    "io_separate_file.separate_file",
+                    exc,
+                    {"file_path": self.file_path},
+                )
+            raise
 
 ################################
 ################################ Вспомогательные классы

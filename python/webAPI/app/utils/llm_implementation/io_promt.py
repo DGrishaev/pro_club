@@ -1,19 +1,54 @@
 # имена классов должны начинаться с promt_
 # и отображать основные характеристики (по усмотрению разработчика)
+from app.utils.rag_artifacts import rag_artifacts, build_context_blob
+
+
+def _save_prompt_artifacts(class_name: str, data, question: str, full_prompt: str) -> None:
+    """Сохраняет итоговый промт и чистый контекст."""
+    if not rag_artifacts.has_session("QU"):
+        return
+    rag_artifacts.write_text("QU", "prompt", "final_prompt.txt", full_prompt)
+    rag_artifacts.write_text("QU", "prompt", "context_only.txt", build_context_blob(data))
+    rag_artifacts.write_json(
+        "QU",
+        "prompt",
+        "prompt_meta.json",
+        {
+            "prompt_class": class_name,
+            "question": question,
+        },
+    )
+
+
+def _log_prompt_error(step: str, exc: Exception, meta: dict | None = None) -> None:
+    """Сохраняет стек ошибки при формировании промта."""
+    if rag_artifacts.has_session("QU"):
+        rag_artifacts.log_exception("QU", step, exc, meta or {})
 
 class promt_default:
     def __init__(self, data, prompt):
         self.data = data
         self.prompt = prompt
     def get_promt(self):
-        return f"Вы полезный ассистент. Вы отвечаете на вопросы о документации, используя эти данные: {self.data}. Ответь на русском языке на этот запрос: {self.prompt} и укажи source "
+        try:
+            result = (
+                f"Вы полезный ассистент. Вы отвечаете на вопросы о документации, используя эти данные: {self.data}. "
+                f"Ответь на русском языке на этот запрос: {self.prompt} и укажи source "
+            )
+            # сохраняем финальный промт для диагностики
+            _save_prompt_artifacts(self.__class__.__name__, self.data, self.prompt, result)
+            return result
+        except Exception as exc:
+            _log_prompt_error("io_promt.promt_default", exc, {"question": self.prompt})
+            raise
 
 class promt_instr:
     def __init__(self, data, prompt):
         self.data = data
         self.prompt = prompt
     def get_promt(self):
-        return f"""
+        try:
+            result = f"""
 Контекст (DOCUMENT):
 {self.data}
 
@@ -36,13 +71,29 @@ class promt_instr:
 Ответ: ...  
 Источник: source_1.pdf
 """
+            # фиксируем текст промта в артефактах
+            _save_prompt_artifacts(self.__class__.__name__, self.data, self.prompt, result)
+            return result
+        except Exception as exc:
+            _log_prompt_error("io_promt.promt_instr", exc, {"question": self.prompt})
+            raise
 
 class promt_test:
     def __init__(self, data, prompt):
         self.data = data
         self.prompt = prompt
     def get_promt(self):
-        return f"DOCUMENT: {self.data} QUESTION: {self.prompt} INSTRUCTIONS: Answer the users QUESTION using the DOCUMENT text above. Keep your answer ground in the facts of the DOCUMENT. If the DOCUMENT doesnt contain the facts to answer the QUESTION return НЕТОТВЕТА. Ответь на русском языке "
+        try:
+            result = (
+                f"DOCUMENT: {self.data} QUESTION: {self.prompt} INSTRUCTIONS: Answer the users QUESTION using the DOCUMENT text above. "
+                "Keep your answer ground in the facts of the DOCUMENT. If the DOCUMENT doesnt contain the facts to answer the QUESTION "
+                "return НЕТОТВЕТА. Ответь на русском языке "
+            )
+            _save_prompt_artifacts(self.__class__.__name__, self.data, self.prompt, result)
+            return result
+        except Exception as exc:
+            _log_prompt_error("io_promt.promt_test", exc, {"question": self.prompt})
+            raise
     
 class promt_test_update:
     def __init__(self, data, prompt):
@@ -50,7 +101,8 @@ class promt_test_update:
         self.prompt = prompt
 
     def get_promt(self):
-        return f"""
+        try:
+            result = f"""
 <system prompt>  
 ВЫ — ЭКСПЕРТНЫЙ АССИСТЕНТ ПО АНАЛИЗУ ДОКУМЕНТАЦИИ. ВАША ГЛАВНАЯ ЗАДАЧА — ОТВЕЧАТЬ НА ВОПРОСЫ ИСКЛЮЧИТЕЛЬНО НА ОСНОВЕ ПРЕДОСТАВЛЕННЫХ ДОКУМЕНТОВ.  
 
@@ -82,3 +134,8 @@ class promt_test_update:
 ВОПРОС: {self.prompt}  
 </system prompt>
 """        
+            _save_prompt_artifacts(self.__class__.__name__, self.data, self.prompt, result)
+            return result
+        except Exception as exc:
+            _log_prompt_error("io_promt.promt_test_update", exc, {"question": self.prompt})
+            raise

@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str
     CHROMA_PERSIST_DIR: str
     LOCAL_UPLOAD_DIR: str
+    DEBUG_RAG: int = 0  # флаг для включения режима сохранения артефактов
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",

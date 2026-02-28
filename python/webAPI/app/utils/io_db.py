@@ -15,6 +15,7 @@ import app.utils.llm_implementation.io_search_from_db as io_search_from_db
 import app.utils.llm_implementation.io_promt as io_promt
 import app.utils.io_file_operation as io_file_operation
 from app.utils.rag_debug import RagDebugger
+from app.utils.rag_artifacts import rag_artifacts
 
 from collections import defaultdict
 from app.config import settings_llm, settings
@@ -62,6 +63,7 @@ class DbHelper:
         self.default_model= default_model
         self.logger = logging.getLogger("rag.db_helper")
         self.debugger = RagDebugger(self.logger)
+        self.artifacts = rag_artifacts
         
     """def process_files(self, user_name):
         copy_user_files_from_input(user_name)
@@ -97,14 +99,35 @@ class DbHelper:
         pdf_files_list = list(set(pdf_files_list + files_to_update))
         
         for file_item in pdf_files_list:
-            separate_text = self.separate_file(file_item)
-            embedding = self.get_embeddings()
-            self.put_vector_in_db(separate_text, embedding)
-            vectordb = self.get_vectror_db(embedding)
-            records_count = len(vectordb.get().get("ids", [])) if vectordb else None
-            self.debugger.log_indexing(file_item, len(separate_text), records_count)
-            #check file as processed
-            configLLM_object.processed_files.append(Processed_Files(name=file_item))
+            try:
+                with self.artifacts.up_session(source_path=file_item, extra_meta={"user_name": self.user_name}):
+                    separate_text = self.separate_file(file_item)
+                    embedding = self.get_embeddings()
+                    self.put_vector_in_db(separate_text, embedding)
+                    vectordb = self.get_vectror_db(embedding)
+                    records_count = len(vectordb.get().get("ids", [])) if vectordb else None
+                    if self.artifacts.has_session("UP"):
+                        # сохраняем краткую сводку по индексации
+                        self.artifacts.write_json(
+                            "UP",
+                            "meta",
+                            "index_summary.json",
+                            {
+                                "file_path": file_item,
+                                "chunks_indexed": len(separate_text),
+                                "records_in_db": records_count,
+                            },
+                        )
+                    self.debugger.log_indexing(file_item, len(separate_text), records_count)
+                    configLLM_object.processed_files.append(Processed_Files(name=file_item))
+            except Exception as exc:
+                self.artifacts.log_exception(
+                    "UP",
+                    "io_db.processing_user_files",
+                    exc,
+                    {"file_path": file_item},
+                )
+                raise
     
         #save configLLM
         self.save_to_configLLM_file(configLLM_object)
@@ -211,50 +234,92 @@ class DbHelper:
 
         self.logger.info("get_answer")
 
-        embedding = self.get_embeddings()
-        vectordb = self.get_vectror_db(embedding)
+        try:
+            with self.artifacts.qu_session(prompt, {"user_name": self.user_name}):
+                if self.artifacts.has_session("QU"):
+                    # сохраняем текст вопроса и параметры запроса
+                    self.artifacts.write_text("QU", "query", "user_question.txt", prompt)
+                    self.artifacts.write_json(
+                        "QU",
+                        "meta",
+                        "params.json",
+                        {
+                            "user_name": self.user_name,
+                            "search_class": settings_llm.CLASS_NAME_SEARCH,
+                            "prompt_length": len(prompt or ""),
+                            "rag_retrieval_k_env": os.getenv("RAG_RETRIEVAL_K"),
+                            "score_threshold_env": os.getenv("RAG_SCORE_THRESHOLD"),
+                        },
+                    )
 
-        llm = self.get_llm(llm_model)
+                embedding = self.get_embeddings()
+                vectordb = self.get_vectror_db(embedding)
 
-        self.logger.info("get_answer + llm")
+                llm = self.get_llm(llm_model)
 
-        class_name_search = settings_llm.CLASS_NAME_SEARCH
-        search_class = getattr(io_search_from_db, class_name_search)
-        search_object = search_class(prompt, self.user_name, vectordb)
-        data =  search_object.seach_from_db()
-        if isinstance(data, list):
-            normalized = []
-            for item in data:
-                if isinstance(item, dict):
-                    normalized.append(item)
+                self.logger.info("get_answer + llm")
+
+                class_name_search = settings_llm.CLASS_NAME_SEARCH
+                search_class = getattr(io_search_from_db, class_name_search)
+                search_object = search_class(prompt, self.user_name, vectordb)
+                data =  search_object.seach_from_db()
+                if isinstance(data, list):
+                    normalized = []
+                    for item in data:
+                        if isinstance(item, dict):
+                            normalized.append(item)
+                        else:
+                            normalized.append({
+                                "content": getattr(item, "page_content", ""),
+                                "metadata": getattr(item, "metadata", {}),
+                                "score": None,
+                            })
+                    self.debugger.log_retrieval(
+                        prompt=prompt,
+                        k=int(os.getenv("RAG_RETRIEVAL_K", "5")),
+                        filters=None,
+                        results=normalized,
+                    )
+
+                self.logger.info("get_answer + io_search_from_db")
+
+                class_name_promt = settings_llm.CLASS_NAME_PROMT
+                promt_class = getattr(io_promt, class_name_promt)
+                promt_object = promt_class(data, prompt)
+                question  =  promt_object.get_promt()
+
+                self.logger.info("get_answer + get_promt")
+
+                raw_response = llm.invoke(question)
+
+                if isinstance(raw_response, str):
+                    text = raw_response
+                    raw_payload = {"type": "str", "content": raw_response}
                 else:
-                    normalized.append({
-                        "content": getattr(item, "page_content", ""),
-                        "metadata": getattr(item, "metadata", {}),
-                        "score": None,
-                    })
-            self.debugger.log_retrieval(
-                prompt=prompt,
-                k=int(os.getenv("RAG_RETRIEVAL_K", "5")),
-                filters=None,
-                results=normalized,
+                    text = getattr(raw_response, "content", str(raw_response))
+                    raw_payload = {
+                        "type": raw_response.__class__.__name__,
+                        "repr": repr(raw_response),
+                        "content": text,
+                    }
+
+                if self.artifacts.has_session("QU"):
+                    # сохраняем итоговый ответ модели
+                    self.artifacts.write_text("QU", "llm", "response.txt", text)
+                    self.artifacts.write_json("QU", "llm", "raw.json", raw_payload)
+
+                if LLM_Models.Olama3.value == "gigachat":
+                    text = getattr(raw_response, "content", text)
+
+                return text
+        except Exception as exc:
+            self.artifacts.log_exception(
+                "QU",
+                "io_db.get_answer",
+                exc,
+                {"user_name": self.user_name},
             )
-
-        self.logger.info("get_answer + io_search_from_db")
-
-        class_name_promt = settings_llm.CLASS_NAME_PROMT
-        promt_class = getattr(io_promt, class_name_promt)
-        promt_object = promt_class(data, prompt)
-        question  =  promt_object.get_promt()
-
-        self.logger.info("get_answer + get_promt")
-
-        text = llm.invoke(question)
-
-        if LLM_Models.Olama3.value == "gigachat":
-            text = text.content
-
-        return text
+            raise
     
     def get_search_answer(self, prompt, llm_model: LLM_Models = None):
 

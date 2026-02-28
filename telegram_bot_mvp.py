@@ -7,6 +7,7 @@ from typing import Any
 import telebot
 from langchain_ollama import ChatOllama
 from python.webAPI.app.config import settings, settings_llm
+from python.webAPI.app.utils.rag_artifacts import rag_artifacts
 
 class ConfigError(RuntimeError):
     pass
@@ -38,16 +39,29 @@ def _index_file(file_path: Path, user_name: str) -> dict[str, Any]:
     put_cls = getattr(io_put_vector_in_db, settings_llm.CLASS_NAME_PUT_VECTOR_IN_DB)
     get_cls = getattr(io_get_vectror_db, settings_llm.CLASS_NAME_GET_VECTOR_DB)
 
-    chunks = separate_cls(str(file_path)).separate_file()
-    if not chunks:
-        raise ValueError("Файл не удалось распарсить или в нём нет текста")
+    with rag_artifacts.up_session(str(file_path), {"user_name": user_name}):
+        chunks = separate_cls(str(file_path)).separate_file()
+        if not chunks:
+            raise ValueError("Файл не удалось распарсить или в нём нет текста")
 
-    embedding = embed_cls().get_embeddings()
-    indexed = put_cls(chunks, embedding, user_name).put_vector_in_db()
-    vectordb = get_cls(user_name, embedding).get_vectror_db()
-    records_count = len(vectordb.get().get("ids", [])) if vectordb else 0
+        embedding = embed_cls().get_embeddings()
+        indexed = put_cls(chunks, embedding, user_name).put_vector_in_db()
+        vectordb = get_cls(user_name, embedding).get_vectror_db()
+        records_count = len(vectordb.get().get("ids", [])) if vectordb else 0
+        if rag_artifacts.has_session("UP"):
+            # сохраняем краткую статистику по индексации
+            rag_artifacts.write_json(
+                "UP",
+                "meta",
+                "index_summary.json",
+                {
+                    "file_path": str(file_path),
+                    "chunks_indexed": len(chunks),
+                    "records_in_db": records_count,
+                },
+            )
 
-    return {"indexed": indexed, "chunk_count": len(chunks), "records_count": records_count}
+        return {"indexed": indexed, "chunk_count": len(chunks), "records_count": records_count}
 
 
 def _retrieve_and_answer(question: str, user_name: str) -> dict[str, Any]:
@@ -63,26 +77,54 @@ def _retrieve_and_answer(question: str, user_name: str) -> dict[str, Any]:
     search_cls = getattr(io_search_from_db, settings_llm.CLASS_NAME_SEARCH)
     prompt_cls = getattr(io_promt, settings_llm.CLASS_NAME_PROMT)
 
-    embedding = embed_cls().get_embeddings()
-    vectordb = get_cls(user_name, embedding).get_vectror_db()
-    search_result = search_cls(question, user_name, vectordb).seach_from_db()
+    with rag_artifacts.qu_session(question, {"user_name": user_name}):
+        if rag_artifacts.has_session("QU"):
+            # фиксируем исходный вопрос и параметры
+            rag_artifacts.write_text("QU", "query", "user_question.txt", question)
+            rag_artifacts.write_json(
+                "QU",
+                "meta",
+                "params.json",
+                {
+                    "user_name": user_name,
+                    "search_class": settings_llm.CLASS_NAME_SEARCH,
+                    "prompt_length": len(question or ""),
+                    "rag_retrieval_k_env": os.getenv("RAG_RETRIEVAL_K"),
+                    "score_threshold_env": os.getenv("RAG_SCORE_THRESHOLD"),
+                },
+            )
 
-    found = len(search_result) if isinstance(search_result, list) else 0
-    if found == 0:
-        return {"answer": "Ничего не найдено в базе. Сначала загрузите документ.", "found": 0}
+        embedding = embed_cls().get_embeddings()
+        vectordb = get_cls(user_name, embedding).get_vectror_db()
+        search_result = search_cls(question, user_name, vectordb).seach_from_db()
 
-    prompt_text = prompt_cls(search_result, question).get_promt()
+        found = len(search_result) if isinstance(search_result, list) else 0
+        if found == 0:
+            return {"answer": "Ничего не найдено в базе. Сначала загрузите документ.", "found": 0}
 
-    llm = ChatOllama(
-        model=settings_llm.REMOTE_LLM_MODEL,
-        base_url=settings_llm.REMOTE_LLM_URL,
-        client_kwargs={"headers": _build_headers()},
-        temperature=0.1,
-    )
+        prompt_text = prompt_cls(search_result, question).get_promt()
 
-    response = llm.invoke(prompt_text)
-    answer = getattr(response, "content", str(response))
-    return {"answer": answer, "found": found}
+        llm = ChatOllama(
+            model=settings_llm.REMOTE_LLM_MODEL,
+            base_url=settings_llm.REMOTE_LLM_URL,
+            client_kwargs={"headers": _build_headers()},
+            temperature=0.1,
+        )
+
+        response = llm.invoke(prompt_text)
+        answer = getattr(response, "content", str(response))
+
+        if rag_artifacts.has_session("QU"):
+            # сохраняем ответ модели для разбора
+            rag_artifacts.write_text("QU", "llm", "response.txt", answer)
+            rag_artifacts.write_json(
+                "QU",
+                "llm",
+                "raw.json",
+                {"type": response.__class__.__name__, "repr": repr(response), "content": answer},
+            )
+
+        return {"answer": answer, "found": found}
 
 def _collect_local_upload_files() -> list[Path]:
     """Возвращает список файлов из локальной папки для команды `/upload`."""

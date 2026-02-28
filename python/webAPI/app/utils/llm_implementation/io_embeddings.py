@@ -6,6 +6,36 @@ try:
     from app.config import settings_llm  # type: ignore
 except Exception:
     settings_llm = None
+from app.utils.rag_artifacts import rag_artifacts
+
+
+def _log_embedding_snapshot(class_name: str, model_name: str, extra: dict | None = None) -> None:
+    """Сохраняет информацию о выбранной модели эмбеддингов."""
+    if not rag_artifacts.has_session("UP"):
+        return
+    rag_artifacts.write_json(
+        "UP",
+        "embeddings",
+        "model.json",
+        {
+            "embedding_class": class_name,
+            "model_name": model_name,
+        },
+    )
+    rag_artifacts.write_json(
+        "UP",
+        "embeddings",
+        "embeddings_meta.json",
+        {
+            "extra": extra or {},
+        },
+    )
+
+
+def _log_embedding_error(step: str, exc: Exception, meta: dict | None = None) -> None:
+    """Логирует ошибки создания эмбеддингов."""
+    if rag_artifacts.has_session("UP"):
+        rag_artifacts.log_exception("UP", step, exc, meta or {})
 
 
 class e_default:
@@ -17,11 +47,20 @@ class e_default:
 
         model_name = "cointegrated/LaBSE-en-ru"
 
-        hf_embeddings_model = HuggingFaceEmbeddings(
-            model_name=model_name, model_kwargs={"device": "cpu"}
-        )
-
-        return hf_embeddings_model
+        try:
+            hf_embeddings_model = HuggingFaceEmbeddings(
+                model_name=model_name, model_kwargs={"device": "cpu"}
+            )
+            # сохраняем сведения о выбранной модели эмбеддингов
+            _log_embedding_snapshot(
+                self.__class__.__name__,
+                model_name,
+                {"provider": "huggingface", "device": "cpu"},
+            )
+            return hf_embeddings_model
+        except Exception as exc:
+            _log_embedding_error("io_embeddings.e_default", exc, {"model_name": model_name})
+            raise
 
 
 class e_multilingual_e5_large:
@@ -33,12 +72,20 @@ class e_multilingual_e5_large:
 
         model_name = "intfloat/multilingual-e5-large"
 
-        hf_embeddings_model = HuggingFaceEmbeddings(
-            model_name=model_name,
-            model_kwargs={"device": "cpu"},
-        )
-
-        return hf_embeddings_model
+        try:
+            hf_embeddings_model = HuggingFaceEmbeddings(
+                model_name=model_name,
+                model_kwargs={"device": "cpu"},
+            )
+            _log_embedding_snapshot(
+                self.__class__.__name__,
+                model_name,
+                {"provider": "huggingface", "device": "cpu"},
+            )
+            return hf_embeddings_model
+        except Exception as exc:
+            _log_embedding_error("io_embeddings.e_multilingual_e5_large", exc, {"model_name": model_name})
+            raise
 
 
 class e_remote_ollama:
@@ -65,8 +112,22 @@ class e_remote_ollama:
         encoded_credentials = base64.b64encode(f"{user}:{password}".encode()).decode()
         headers = {"Authorization": f"Basic {encoded_credentials}"}
 
-        return OllamaEmbeddings(
-            model=model_name,
-            base_url=base_url,
-            client_kwargs={"headers": headers},
-        )
+        try:
+            instance = OllamaEmbeddings(
+                model=model_name,
+                base_url=base_url,
+                client_kwargs={"headers": headers},
+            )
+            _log_embedding_snapshot(
+                self.__class__.__name__,
+                model_name,
+                {"provider": "ollama", "base_url": base_url},
+            )
+            return instance
+        except Exception as exc:
+            _log_embedding_error(
+                "io_embeddings.e_remote_ollama",
+                exc,
+                {"model_name": model_name, "base_url": base_url},
+            )
+            raise
