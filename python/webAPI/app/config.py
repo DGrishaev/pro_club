@@ -1,7 +1,9 @@
 
 from pathlib import Path
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Optional
+
 from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parents[3]
 
@@ -31,11 +33,23 @@ class LLM_Settings(BaseSettings):
     REMOTE_EMBEDDINGS_URL: str
     REMOTE_AUTH_USER: str
     REMOTE_AUTH_PASSWORD: str
+    USER_LLM: Optional[str] = Field(default=None)
+    PASSWORD_LLM: Optional[str] = Field(default=None)
+    URL_LLM: Optional[str] = Field(default=None)
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR /   ".env.llm",
         env_file_encoding='utf-8'
         )
+
+    def model_post_init(self, __context):
+        """Подставляем значения из REMOTE_* если в .env.llm не заданы USER_LLM/PASSWORD_LLM/URL_LLM."""
+        if not self.USER_LLM:
+            object.__setattr__(self, "USER_LLM", self.REMOTE_AUTH_USER)
+        if not self.PASSWORD_LLM:
+            object.__setattr__(self, "PASSWORD_LLM", self.REMOTE_AUTH_PASSWORD)
+        if not self.URL_LLM:
+            object.__setattr__(self, "URL_LLM", self.REMOTE_LLM_URL)
 
 
 settings = Settings()
