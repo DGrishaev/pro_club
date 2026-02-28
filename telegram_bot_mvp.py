@@ -1,8 +1,6 @@
 import base64
-import json
 import os
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -10,16 +8,8 @@ import telebot
 from langchain_ollama import ChatOllama
 from python.webAPI.app.config import settings, settings_llm
 
-DEFAULT_CONFIG_JSON = "python/webAPI/app/utils/config.json"
-
 class ConfigError(RuntimeError):
     pass
-
-def _load_impl_config(path: str) -> dict[str, Any]:
-    config_path = Path(path)
-    if not config_path.exists():
-        raise ConfigError(f"LLM implementation config not found: {path}")
-    return json.loads(config_path.read_text(encoding="utf-8"))
 
 
 def _bootstrap_llm_modules() -> None:
@@ -29,19 +19,10 @@ def _bootstrap_llm_modules() -> None:
 
 
 def _build_headers() -> dict[str, str]:
-    import base64
     encoded = base64.b64encode(
         f"{settings_llm.REMOTE_AUTH_USER}:{settings_llm.REMOTE_AUTH_PASSWORD}".encode()
     ).decode()
     return {"Authorization": f"Basic {encoded}"}
-
-
-def _pick_class_name(cfg: dict[str, Any], *keys: str) -> str:
-    for key in keys:
-        value = cfg.get(key)
-        if value:
-            return value
-    raise ConfigError(f"Class name not found in config, expected one of: {', '.join(keys)}")
 
 
 def _index_file(file_path: Path, user_name: str) -> dict[str, Any]:
@@ -105,12 +86,13 @@ def _retrieve_and_answer(question: str, user_name: str) -> dict[str, Any]:
 
 def _collect_local_upload_files() -> list[Path]:
     """Возвращает список файлов из локальной папки для команды `/upload`."""
-    if not settings.local_upload_dir:
+    upload_dir_raw = getattr(settings, "LOCAL_UPLOAD_DIR", "")
+    if not upload_dir_raw:
         raise ConfigError(
-            "Не задана папка загрузки. Укажите LOCAL_RAG_UPLOAD_DIR (или RAG_UPLOAD_DIR) в .env."
+            "Не задана папка загрузки. Укажите LOCAL_UPLOAD_DIR в .env."
         )
 
-    upload_dir = Path(settings.local_upload_dir).expanduser().resolve()
+    upload_dir = Path(upload_dir_raw).expanduser().resolve()
     if not upload_dir.exists() or not upload_dir.is_dir():
         raise ConfigError(f"Папка для загрузки не найдена: {upload_dir}")
 
@@ -119,15 +101,12 @@ def _collect_local_upload_files() -> list[Path]:
     return sorted(path for path in upload_dir.iterdir() if path.is_file() and path.suffix.lower() in supported_ext)
 
 
-def _clear_user_rag_db(user_name: str, cfg: dict[str, Any]) -> int:
+def _clear_user_rag_db(user_name: str) -> int:
     """Полностью очищает пользовательскую коллекцию Chroma и возвращает количество удалённых записей."""
     from python.webAPI.app.utils.llm_implementation import io_embeddings, io_get_vectror_db
 
-    embed_name = _pick_class_name(cfg, "class_name_embeddings")
-    get_name = _pick_class_name(cfg, "class_name_get_vectror_db", "class_name_get_vector_db")
-
-    embedding = getattr(io_embeddings, embed_name)().get_embeddings()
-    vectordb = getattr(io_get_vectror_db, get_name)(user_name, embedding).get_vectror_db()
+    embedding = getattr(io_embeddings, settings_llm.CLASS_NAME_EMBEDDINGS)().get_embeddings()
+    vectordb = getattr(io_get_vectror_db, settings_llm.CLASS_NAME_GET_VECTOR_DB)(user_name, embedding).get_vectror_db()
 
     all_records = vectordb.get()
     ids = all_records.get("ids", [])
@@ -136,15 +115,12 @@ def _clear_user_rag_db(user_name: str, cfg: dict[str, Any]) -> int:
     return len(ids)
 
 
-def _get_user_indexed_sources(user_name: str, cfg: dict[str, Any]) -> list[str]:
+def _get_user_indexed_sources(user_name: str) -> list[str]:
     """Возвращает уникальные пути исходных файлов, которые уже были сохранены в Chroma."""
     from python.webAPI.app.utils.llm_implementation import io_embeddings, io_get_vectror_db
 
-    embed_name = _pick_class_name(cfg, "class_name_embeddings")
-    get_name = _pick_class_name(cfg, "class_name_get_vectror_db", "class_name_get_vector_db")
-
-    embedding = getattr(io_embeddings, embed_name)().get_embeddings()
-    vectordb = getattr(io_get_vectror_db, get_name)(user_name, embedding).get_vectror_db()
+    embedding = getattr(io_embeddings, settings_llm.CLASS_NAME_EMBEDDINGS)().get_embeddings()
+    vectordb = getattr(io_get_vectror_db, settings_llm.CLASS_NAME_GET_VECTOR_DB)(user_name, embedding).get_vectror_db()
 
     records = vectordb.get(include=["metadatas"])
     sources: set[str] = set()
@@ -166,9 +142,6 @@ def run_bot() -> None:
     os.environ["REMOTE_EMBEDDINGS_URL"] = settings_llm.REMOTE_EMBEDDINGS_URL
     os.environ["REMOTE_AUTH_USER"] = settings_llm.REMOTE_AUTH_USER
     os.environ["REMOTE_AUTH_PASSWORD"] = settings_llm.REMOTE_AUTH_PASSWORD
-
-    impl_cfg_path = getattr(settings_llm, "LLM_IMPLEMENTATION_CONFIG", DEFAULT_CONFIG_JSON)
-    impl_cfg = _load_impl_config(impl_cfg_path)
 
     Path(os.environ["CHROMA_PERSIST_DIR"]).mkdir(parents=True, exist_ok=True)
 
@@ -202,7 +175,7 @@ def run_bot() -> None:
             last_records_count = 0
 
             for file_path in files:
-                stats = _index_file(file_path, user_name, impl_cfg)
+                stats = _index_file(file_path, user_name)
                 uploaded_count += 1
                 chunks_total += int(stats["chunk_count"])
                 last_records_count = int(stats["records_count"])
@@ -223,7 +196,7 @@ def run_bot() -> None:
     def _clear_user_db(message):
         user_name = str(message.from_user.id)
         try:
-            deleted_count = _clear_user_rag_db(user_name, impl_cfg)
+            deleted_count = _clear_user_rag_db(user_name)
             bot.reply_to(message, f"База очищена. Удалено записей: {deleted_count}.")
         except Exception as exc:
             bot.reply_to(message, f"Ошибка команды /clear: {_short_exc(exc)}")
@@ -232,7 +205,7 @@ def run_bot() -> None:
     def _status_user_db(message):
         user_name = str(message.from_user.id)
         try:
-            sources = _get_user_indexed_sources(user_name, impl_cfg)
+            sources = _get_user_indexed_sources(user_name)
             if not sources:
                 bot.reply_to(message, "В базе пока нет загруженных документов.")
                 return
@@ -256,7 +229,7 @@ def run_bot() -> None:
             local_path = user_dir / filename
             local_path.write_bytes(downloaded)
 
-            stats = _index_file(local_path, user_name, impl_cfg)
+            stats = _index_file(local_path, user_name)
             bot.reply_to(
                 message,
                 (
@@ -278,7 +251,7 @@ def run_bot() -> None:
 
         try:
             user_name = str(message.from_user.id)
-            result = _retrieve_and_answer(question, user_name, impl_cfg)
+            result = _retrieve_and_answer(question, user_name)
             bot.reply_to(message, f"Ответ:\n{result['answer']}\n\n[debug] найдено: {result['found']}")
         except Exception as exc:
             bot.reply_to(message, f"Ошибка retrieval: {_short_exc(exc)}")
