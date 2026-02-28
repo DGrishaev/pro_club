@@ -5,18 +5,16 @@ pd.set_option('future.no_silent_downcasting', True)
 import os, re, inspect
 import fitz
 from abc import ABC, abstractmethod
-from langchain.docstore.document import Document as LangDocument
-from tabulate import tabulate  # ✅ Импорт добавлен
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.docstore.document import Document as LangDocument
-import re
-from langchain.text_splitter import CharacterTextSplitter
+from langchain_core.documents import Document as LangDocument
+from tabulate import tabulate
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
 
 class sf_DataProcessing_keywords_512_chunk_and_Tables:
     def __init__(self, file_path):
         self.file_path = file_path
     def separate_file(self):
-        from langchain.text_splitter import (
+        from langchain_text_splitters import (
             RecursiveCharacterTextSplitter,
         )
         # читаем документ

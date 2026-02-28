@@ -8,78 +8,12 @@ from typing import Any
 
 import telebot
 from langchain_ollama import ChatOllama
+from python.webAPI.app.config import settings, settings_llm
 
-ENV_FILE = ".env"
-LLM_ENV_FILE = ".env.llm"
 DEFAULT_CONFIG_JSON = "python/webAPI/app/utils/config.json"
-
 
 class ConfigError(RuntimeError):
     pass
-
-
-@dataclass
-class Settings:
-    telegram_bot_token: str
-    chroma_persist_dir: str
-    remote_llm_url: str
-    remote_auth_user: str
-    remote_auth_password: str
-    llm_model: str
-    llm_impl_config: str
-    local_upload_dir: str | None
-
-
-def _load_dotenv(dotenv_path: str = ENV_FILE) -> None:
-    """Загружает пары KEY=VALUE из файла окружения в process env."""
-    path = Path(dotenv_path)
-    if not path.exists():
-        return
-
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
-
-
-def _required_env(name: str) -> str:
-    value = os.getenv(name, "").strip()
-    if not value:
-        raise ConfigError(f"Missing required env var: {name}. Fill `.env` based on `.env.example`.")
-    return value
-
-
-def _resolve_chroma_dir(raw_path: str) -> str:
-    """Преобразует путь к ChromaDB в абсолютный локальный путь.
-
-    Это позволяет хранить базу вне каталога проекта, если путь задан в `.env`.
-    """
-    # Поддерживаем `~` и относительные пути, чтобы пользователь мог указывать путь гибко.
-    return str(Path(raw_path).expanduser().resolve())
-
-
-def load_settings() -> Settings:
-    # Сначала читаем базовый `.env`, затем `.env.llm` для настроек LLM/GPU.
-    _load_dotenv(ENV_FILE)
-    _load_dotenv(LLM_ENV_FILE)
-
-    chroma_dir = _resolve_chroma_dir(os.getenv("CHROMA_PERSIST_DIR", "./data/chroma"))
-
-    return Settings(
-        telegram_bot_token=_required_env("TELEGRAM_BOT_TOKEN"),
-        chroma_persist_dir=chroma_dir,
-        remote_llm_url=_required_env("REMOTE_LLM_URL"),
-        remote_auth_user=_required_env("REMOTE_AUTH_USER"),
-        remote_auth_password=_required_env("REMOTE_AUTH_PASSWORD"),
-        llm_model=os.getenv("REMOTE_LLM_MODEL", "llama3.1"),
-        llm_impl_config=os.getenv("LLM_IMPLEMENTATION_CONFIG", DEFAULT_CONFIG_JSON),
-        # Поддерживаем несколько имён переменной для обратной совместимости конфигов.
-        local_upload_dir=(os.getenv("LOCAL_UPLOAD_DIR")).strip()
-        or None,
-    )
-
 
 def _load_impl_config(path: str) -> dict[str, Any]:
     config_path = Path(path)
@@ -94,8 +28,11 @@ def _bootstrap_llm_modules() -> None:
         sys.path.insert(0, str(webapi_root.resolve()))
 
 
-def _build_headers(settings: Settings) -> dict[str, str]:
-    encoded = base64.b64encode(f"{settings.remote_auth_user}:{settings.remote_auth_password}".encode()).decode()
+def _build_headers() -> dict[str, str]:
+    import base64
+    encoded = base64.b64encode(
+        f"{settings_llm.REMOTE_AUTH_USER}:{settings_llm.REMOTE_AUTH_PASSWORD}".encode()
+    ).decode()
     return {"Authorization": f"Basic {encoded}"}
 
 
@@ -107,18 +44,18 @@ def _pick_class_name(cfg: dict[str, Any], *keys: str) -> str:
     raise ConfigError(f"Class name not found in config, expected one of: {', '.join(keys)}")
 
 
-def _index_file(file_path: Path, user_name: str, cfg: dict[str, Any]) -> dict[str, Any]:
-    from python.webAPI.app.utils.llm_implementation import io_embeddings, io_get_vectror_db, io_put_vector_in_db, io_separate_file
+def _index_file(file_path: Path, user_name: str) -> dict[str, Any]:
+    from python.webAPI.app.utils.llm_implementation import (
+        io_embeddings,
+        io_get_vectror_db,
+        io_put_vector_in_db,
+        io_separate_file,
+    )
 
-    separate_name = _pick_class_name(cfg, "class_name_separate_file")
-    embed_name = _pick_class_name(cfg, "class_name_embeddings")
-    put_name = _pick_class_name(cfg, "class_name_put_vector_in_db")
-    get_name = _pick_class_name(cfg, "class_name_get_vectror_db", "class_name_get_vector_db")
-
-    separate_cls = getattr(io_separate_file, separate_name)
-    embed_cls = getattr(io_embeddings, embed_name)
-    put_cls = getattr(io_put_vector_in_db, put_name)
-    get_cls = getattr(io_get_vectror_db, get_name)
+    separate_cls = getattr(io_separate_file, settings_llm.CLASS_NAME_SEPARATE_FILE)
+    embed_cls = getattr(io_embeddings, settings_llm.CLASS_NAME_EMBEDDINGS)
+    put_cls = getattr(io_put_vector_in_db, settings_llm.CLASS_NAME_PUT_VECTOR_IN_DB)
+    get_cls = getattr(io_get_vectror_db, settings_llm.CLASS_NAME_GET_VECTOR_DB)
 
     chunks = separate_cls(str(file_path)).separate_file()
     if not chunks:
@@ -132,7 +69,7 @@ def _index_file(file_path: Path, user_name: str, cfg: dict[str, Any]) -> dict[st
     return {"indexed": indexed, "chunk_count": len(chunks), "records_count": records_count}
 
 
-def _retrieve_and_answer(question: str, user_name: str, cfg: dict[str, Any], settings: Settings) -> dict[str, Any]:
+def _retrieve_and_answer(question: str, user_name: str) -> dict[str, Any]:
     from python.webAPI.app.utils.llm_implementation import (
         io_embeddings,
         io_get_vectror_db,
@@ -140,38 +77,33 @@ def _retrieve_and_answer(question: str, user_name: str, cfg: dict[str, Any], set
         io_search_from_db,
     )
 
-    embed_name = _pick_class_name(cfg, "class_name_embeddings")
-    get_name = _pick_class_name(cfg, "class_name_get_vectror_db", "class_name_get_vector_db")
-    search_name = _pick_class_name(cfg, "class_name_search")
-    prompt_name = _pick_class_name(cfg, "class_name_promt", "class_name_prompt")
+    embed_cls = getattr(io_embeddings, settings_llm.CLASS_NAME_EMBEDDINGS)
+    get_cls = getattr(io_get_vectror_db, settings_llm.CLASS_NAME_GET_VECTOR_DB)
+    search_cls = getattr(io_search_from_db, settings_llm.CLASS_NAME_SEARCH)
+    prompt_cls = getattr(io_promt, settings_llm.CLASS_NAME_PROMT)
 
-    embedding = getattr(io_embeddings, embed_name)().get_embeddings()
-    vectordb = getattr(io_get_vectror_db, get_name)(user_name, embedding).get_vectror_db()
-    search_result = getattr(io_search_from_db, search_name)(question, user_name, vectordb).seach_from_db()
+    embedding = embed_cls().get_embeddings()
+    vectordb = get_cls(user_name, embedding).get_vectror_db()
+    search_result = search_cls(question, user_name, vectordb).seach_from_db()
 
     found = len(search_result) if isinstance(search_result, list) else 0
     if found == 0:
         return {"answer": "Ничего не найдено в базе. Сначала загрузите документ.", "found": 0}
 
-    prompt_text = getattr(io_promt, prompt_name)(search_result, question).get_promt()
+    prompt_text = prompt_cls(search_result, question).get_promt()
 
     llm = ChatOllama(
-        model=cfg.get("model", settings.llm_model),
-        base_url=settings.remote_llm_url,
-        client_kwargs={"headers": _build_headers(settings)},
+        model=settings_llm.REMOTE_LLM_MODEL,
+        base_url=settings_llm.REMOTE_LLM_URL,
+        client_kwargs={"headers": _build_headers()},
         temperature=0.1,
     )
 
-    try:
-        response = llm.invoke(prompt_text)
-        answer = getattr(response, "content", str(response))
-    except Exception:
-        answer = "LLM недоступна, но retrieval выполнен успешно."
-
+    response = llm.invoke(prompt_text)
+    answer = getattr(response, "content", str(response))
     return {"answer": answer, "found": found}
 
-
-def _collect_local_upload_files(settings: Settings) -> list[Path]:
+def _collect_local_upload_files() -> list[Path]:
     """Возвращает список файлов из локальной папки для команды `/upload`."""
     if not settings.local_upload_dir:
         raise ConfigError(
@@ -221,21 +153,26 @@ def _get_user_indexed_sources(user_name: str, cfg: dict[str, Any]) -> list[str]:
             sources.add(str(metadata["source"]))
     return sorted(sources)
 
+def _short_exc(exc: Exception, limit: int = 900) -> str:
+    txt = str(exc)
+    return txt if len(txt) <= limit else txt[:limit] + "…"
+
 
 def run_bot() -> None:
-    settings = load_settings()
     _bootstrap_llm_modules()
 
-    # Прокидываем обязательные настройки в нижележащие модули RAG.
-    os.environ["CHROMA_PERSIST_DIR"] = settings.chroma_persist_dir
-    os.environ.setdefault("REMOTE_EMBEDDINGS_URL", os.getenv("REMOTE_EMBEDDINGS_URL", settings.remote_llm_url))
-    os.environ["REMOTE_AUTH_USER"] = settings.remote_auth_user
-    os.environ["REMOTE_AUTH_PASSWORD"] = settings.remote_auth_password
+    # ✅ если нижележащие модули читают env-переменные — прокидываем их
+    os.environ["CHROMA_PERSIST_DIR"] = settings.CHROMA_PERSIST_DIR
+    os.environ["REMOTE_EMBEDDINGS_URL"] = settings_llm.REMOTE_EMBEDDINGS_URL
+    os.environ["REMOTE_AUTH_USER"] = settings_llm.REMOTE_AUTH_USER
+    os.environ["REMOTE_AUTH_PASSWORD"] = settings_llm.REMOTE_AUTH_PASSWORD
 
-    impl_cfg = _load_impl_config(settings.llm_impl_config)
-    Path(settings.chroma_persist_dir).mkdir(parents=True, exist_ok=True)
+    impl_cfg_path = getattr(settings_llm, "LLM_IMPLEMENTATION_CONFIG", DEFAULT_CONFIG_JSON)
+    impl_cfg = _load_impl_config(impl_cfg_path)
 
-    bot = telebot.TeleBot(settings.telegram_bot_token)
+    Path(os.environ["CHROMA_PERSIST_DIR"]).mkdir(parents=True, exist_ok=True)
+
+    bot = telebot.TeleBot(settings.TELEGRAM_BOT_TOKEN)
 
     @bot.message_handler(commands=["start", "help"])
     def _start(message):
@@ -253,11 +190,9 @@ def run_bot() -> None:
 
     @bot.message_handler(commands=["upload"])
     def _upload_from_local_dir(message):
-        """Индексирует все поддерживаемые файлы из локальной папки, указанной в `.env`."""
         user_name = str(message.from_user.id)
-
         try:
-            files = _collect_local_upload_files(settings)
+            files = _collect_local_upload_files()
             if not files:
                 bot.reply_to(message, "В папке загрузки нет поддерживаемых файлов (.pdf, .docx, .pptx).")
                 return
@@ -282,24 +217,20 @@ def run_bot() -> None:
                 ),
             )
         except Exception as exc:
-            bot.reply_to(message, f"Ошибка команды /upload: {exc}")
+            bot.reply_to(message, f"Ошибка команды /upload: {_short_exc(exc)}")
 
     @bot.message_handler(commands=["clear"])
     def _clear_user_db(message):
-        """Очищает всю RAG-базу текущего пользователя."""
         user_name = str(message.from_user.id)
-
         try:
             deleted_count = _clear_user_rag_db(user_name, impl_cfg)
             bot.reply_to(message, f"База очищена. Удалено записей: {deleted_count}.")
         except Exception as exc:
-            bot.reply_to(message, f"Ошибка команды /clear: {exc}")
+            bot.reply_to(message, f"Ошибка команды /clear: {_short_exc(exc)}")
 
     @bot.message_handler(commands=["status"])
     def _status_user_db(message):
-        """Показывает список файлов, которые уже участвуют в RAG у пользователя."""
         user_name = str(message.from_user.id)
-
         try:
             sources = _get_user_indexed_sources(user_name, impl_cfg)
             if not sources:
@@ -309,7 +240,7 @@ def run_bot() -> None:
             pretty_list = "\n".join(f"{idx}. {Path(src).name}" for idx, src in enumerate(sources, start=1))
             bot.reply_to(message, f"Загруженные документы ({len(sources)}):\n{pretty_list}")
         except Exception as exc:
-            bot.reply_to(message, f"Ошибка команды /status: {exc}")
+            bot.reply_to(message, f"Ошибка команды /status: {_short_exc(exc)}")
 
     @bot.message_handler(content_types=["document"])
     def _handle_document(message):
@@ -332,11 +263,11 @@ def run_bot() -> None:
                     f"Файл сохранён: {local_path}\n"
                     f"Чанков: {stats['chunk_count']}\n"
                     f"Записей в Chroma: {stats['records_count']}\n"
-                    f"Путь Chroma: {settings.chroma_persist_dir}/{user_name}/db"
+                    f"Путь Chroma: {os.environ['CHROMA_PERSIST_DIR']}/{user_name}/db"
                 ),
             )
         except Exception as exc:
-            bot.reply_to(message, f"Ошибка обработки файла: {exc}")
+            bot.reply_to(message, f"Ошибка обработки файла: {_short_exc(exc)}")
 
     @bot.message_handler(content_types=["text"])
     def _handle_text(message):
@@ -347,17 +278,13 @@ def run_bot() -> None:
 
         try:
             user_name = str(message.from_user.id)
-            result = _retrieve_and_answer(question, user_name, impl_cfg, settings)
-            bot.reply_to(
-                message,
-                f"Ответ:\n{result['answer']}\n\n[debug] найдено: {result['found']}",
-            )
+            result = _retrieve_and_answer(question, user_name, impl_cfg)
+            bot.reply_to(message, f"Ответ:\n{result['answer']}\n\n[debug] найдено: {result['found']}")
         except Exception as exc:
-            bot.reply_to(message, f"Ошибка retrieval: {exc}")
+            bot.reply_to(message, f"Ошибка retrieval: {_short_exc(exc)}")
 
     print("Telegram MVP bot started (polling).")
     bot.infinity_polling(skip_pending=True)
-
 
 if __name__ == "__main__":
     try:
