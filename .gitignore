@@ -1387,3 +1387,5 @@ python/webAPI/app/del_main_api.db
 python/webAPI/main_api.db
 .env
 .env.llm
+.vscode/launch.json
+.vscode/settings.json
