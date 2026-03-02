@@ -226,6 +226,25 @@ class s_default:
             )
             raise
 
+class k_five_backup:
+    def __init__(self, prompt, user_name, vectordb):
+        self.prompt = prompt
+        self.user_name = user_name
+        self.vectordb = vectordb
+
+    def seach_from_db(self):
+        k = _k_from_env(5)
+        try:
+            results = self.vectordb.similarity_search(self.prompt, k=k)
+            _log_search_artifacts(self.prompt, self.user_name, self.__class__.__name__, k, results)
+            return results
+        except Exception as exc:
+            _log_search_error(
+                "io_search_from_db.s_default",
+                exc,
+                {"user_name": self.user_name, "k": k},
+            )
+            raise
 
 class s_k_five:
     def __init__(self, prompt, user_name, vectordb):
