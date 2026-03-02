@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import threading
 import traceback
 from contextlib import contextmanager
@@ -15,9 +16,14 @@ from pathlib import Path
 from typing import Any, Iterable, Literal
 
 try:
-    from app.config import settings  # type: ignore
+    # При стандартном запуске из корня репозитория модуль доступен по полному пути.
+    from python.webAPI.app.config import settings  # type: ignore
 except Exception:
-    settings = None
+    try:
+        # Fallback для запуска из python/webAPI, где app выступает корневым пакетом.
+        from app.config import settings  # type: ignore
+    except Exception:
+        settings = None
 
 ArtifactKind = Literal["UP", "QU"]
 
@@ -299,6 +305,12 @@ class RagArtifactsManager:
 
 
 rag_artifacts = RagArtifactsManager()
+
+# Унифицируем алиасы модуля, чтобы импорты через `app.*` и `python.webAPI.app.*`
+# использовали один и тот же объект `rag_artifacts` и общий контекст сессии.
+_this_module = sys.modules[__name__]
+sys.modules.setdefault("app.utils.rag_artifacts", _this_module)
+sys.modules.setdefault("python.webAPI.app.utils.rag_artifacts", _this_module)
 
 __all__ = [
     "rag_artifacts",
