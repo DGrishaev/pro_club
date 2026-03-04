@@ -429,7 +429,6 @@ class sf_DataProcessing_keywords_512_chunk_and_Tables:
         return {
             "doc_id": self.doc_id,
             "chunk_index": chunk_index,
-            "chunk_id": f"{self.doc_id}_{chunk_index}",
             "source": self.source,
             "type": chunk_type,
             "content_type": content_type,
@@ -672,8 +671,6 @@ class sf_DataProcessing_keywords_512_chunk_and_Tables:
             return chunk_index
         for chunk_text in self._split_text_chunks(joined):
             metadata = self._new_metadata(chunk_index, "paragraph", section)
-            if flags:
-                metadata["flags_json"] = json.dumps(flags, ensure_ascii=False, sort_keys=True)
             final_docs.append(LangDocument(page_content=chunk_text, metadata=self._metadata_safe(metadata)))
             chunk_index += 1
         return chunk_index
@@ -739,11 +736,6 @@ class sf_DataProcessing_keywords_512_chunk_and_Tables:
                         )
                         paragraph_buffer = []
                         metadata = self._new_metadata(chunk_index, "heading", section)
-                        metadata["flags_json"] = json.dumps(
-                            {"is_heading": True, **block_flags},
-                            ensure_ascii=False,
-                            sort_keys=True,
-                        )
                         metadata["skip_embedding"] = True
                         final_docs.append(
                             LangDocument(page_content=paragraph_text, metadata=self._metadata_safe(metadata))
