@@ -1,7 +1,5 @@
 # имена классов должны начинаться с sf_
 # и отображать основные характеристики (по усмотрению разработчика)
-import pandas as pd
-pd.set_option('future.no_silent_downcasting', True)
 import os, re, inspect, hashlib
 from pathlib import Path
 import fitz
@@ -23,15 +21,25 @@ class sf_DataProcessing_keywords_512_chunk_and_Tables:
         self.file_path = file_path
         self.source = str(Path(file_path).resolve())
         self.doc_id = self._build_doc_id(self.source)
-        self.chunk_size = self._env_int("RAG_CHUNK_SIZE_CHARS", 2400)
+        self.target_chunk_chars = self._env_int("RAG_TARGET_CHUNK_CHARS", 1000)
+        self.max_chunk_chars = self._env_int("RAG_MAX_CHUNK_CHARS", 1800)
+        self.min_chunk_chars = self._env_int("RAG_MIN_CHUNK_CHARS", 300)
         self.chunk_overlap = self._env_int("RAG_CHUNK_OVERLAP_CHARS", 300)
         self.table_window_threshold = self._env_int("RAG_TABLE_WINDOW_THRESHOLD", 50)
         self.table_window_size = self._env_int("RAG_TABLE_WINDOW_SIZE", 20)
         self.table_summary_preview_rows = self._env_int("RAG_TABLE_SUMMARY_PREVIEW_ROWS", 3)
         self.max_header_rows = self._env_int("RAG_TABLE_MAX_HEADER_ROWS", 2)
+        self.skip_toc = self._env_bool("RAG_SKIP_TOC", True)
+        self.skip_front_matter = self._env_bool("RAG_SKIP_FRONT_MATTER", True)
+        self.embed_headings = self._env_bool("RAG_EMBED_HEADINGS", False)
+        if os.getenv("RAG_SKIP_HEADINGS") is None:
+            self.skip_headings = not self.embed_headings
+        else:
+            self.skip_headings = self._env_bool("RAG_SKIP_HEADINGS", True)
+        self._debug_skipped_counts = {"heading": 0, "toc": 0, "boilerplate": 0}
         # Разделитель используется только для текстовых абзацев.
         self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=self.chunk_size,
+            chunk_size=self.max_chunk_chars,
             chunk_overlap=self.chunk_overlap,
             separators=["\n\n", "\n", ". ", " ", ""],
         )
@@ -46,6 +54,13 @@ class sf_DataProcessing_keywords_512_chunk_and_Tables:
             return value if value > 0 else default
         except Exception:
             return default
+
+    def _env_bool(self, name: str, default: bool) -> bool:
+        """Читает bool-параметр из env без падения на невалидных значениях."""
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
 
     def _build_doc_id(self, source_path: str) -> str:
         """Строит стабильный doc_id по имени файла и абсолютному пути."""
@@ -121,6 +136,108 @@ class sf_DataProcessing_keywords_512_chunk_and_Tables:
         if not letters:
             return False
         return letters.isupper()
+
+    def _contains_url(self, text: str) -> bool:
+        """Проверяет, содержит ли строка ссылку/домен."""
+        return bool(re.search(r"(https?://|www\.|[a-z0-9-]+\.[a-z]{2,})", text.lower()))
+
+    def _upper_ratio(self, text: str) -> float:
+        """Возвращает долю букв в верхнем регистре среди всех буквенных символов."""
+        letters = [ch for ch in text if ch.isalpha()]
+        if not letters:
+            return 0.0
+        upper = sum(1 for ch in letters if ch.isupper())
+        return upper / len(letters)
+
+    def _is_heading_fallback(self, text: str) -> bool:
+        """Резервная эвристика heading, когда стиль не задан или ненадежен."""
+        normalized = self.normalize_text(text)
+        if not normalized or len(normalized) > 80:
+            return False
+        if normalized.endswith("."):
+            return False
+        if self._contains_url(normalized):
+            return False
+        return self._upper_ratio(normalized) >= 0.60
+
+    def _is_toc_heading(self, text: str) -> bool:
+        """Определяет заголовок блока оглавления."""
+        key = self.normalize_text(text).strip().upper()
+        return key in {"ОГЛАВЛЕНИЕ", "СОДЕРЖАНИЕ", "TABLE OF CONTENTS", "CONTENTS"}
+
+    def _is_toc_line(self, text: str) -> bool:
+        """Эвристика строки оглавления с номером страницы в конце."""
+        line = self.normalize_text(text)
+        if not line:
+            return False
+        if re.match(r".*\t\d{1,3}$", line):
+            return True
+        if re.match(r".*\.{2,}\s*\d{1,3}$", line):
+            return True
+        if re.match(r".*\s{2,}\d{1,3}$", line):
+            return True
+        if re.match(r".*\s\d{1,3}$", line):
+            return True
+        return False
+
+    def _is_boilerplate_root_line(self, text: str) -> bool:
+        """Консервативно фильтрует титульные/служебные строки в начале документа."""
+        line = self.normalize_text(text)
+        low = line.lower()
+        if not line:
+            return False
+        if self._contains_url(line):
+            return True
+        if re.fullmatch(r"(19|20)\d{2}", line):
+            return True
+        if re.fullmatch(r"\d{1,2}[./-]\d{1,2}([./-]\d{2,4})?", line):
+            return True
+        if re.search(r"\b(редакция|версия)\b", low):
+            return True
+        if re.search(r"\b(введено в действие|утверждено|утверждаю)\b", low):
+            return True
+        if line in {"Москва", "Санкт-Петербург", "Казань", "Новосибирск", "Екатеринбург"}:
+            return True
+        if len(line) <= 20 and re.fullmatch(r"[A-Za-zА-Яа-яЁё -]+", line):
+            return True
+        return False
+
+    def _classify_paragraph_block(
+        self,
+        text: str,
+        style_name: str,
+        current_section: str,
+        toc_mode: bool,
+        has_real_section: bool,
+    ) -> tuple[str, dict, bool]:
+        """Классифицирует paragraph в heading/toc_line/boilerplate/content_paragraph."""
+        normalized = self.normalize_text(text)
+        flags = {"is_heading": False, "is_toc": False, "is_boilerplate": False}
+        if not normalized:
+            return "boilerplate", flags, toc_mode
+
+        if self._is_toc_heading(normalized):
+            flags["is_toc"] = True
+            return "heading", flags, True
+
+        if toc_mode and self._is_toc_line(normalized):
+            flags["is_toc"] = True
+            return "toc_line", flags, True
+
+        is_style_heading = style_name.lower().startswith("heading")
+        is_heading = is_style_heading or self._is_heading_fallback(normalized) or (
+            current_section != "root" and normalized == current_section
+        )
+        if is_heading:
+            flags["is_heading"] = True
+            return "heading", flags, False
+
+        if self.skip_front_matter and not has_real_section and current_section == "root":
+            if self._is_boilerplate_root_line(normalized):
+                flags["is_boilerplate"] = True
+                return "boilerplate", flags, False
+
+        return "content_paragraph", flags, False
 
     def _normalize_row_width(self, rows: list[list[str]]) -> list[list[str]]:
         """Приводит все строки таблицы к одинаковой ширине по числу колонок."""
@@ -316,6 +433,7 @@ class sf_DataProcessing_keywords_512_chunk_and_Tables:
             "type": chunk_type,
             "content_type": content_type,
             "section": section or "root",
+            "section_path": section or "root",
         }
 
     def _parse_docx(self) -> list[dict]:
@@ -327,6 +445,8 @@ class sf_DataProcessing_keywords_512_chunk_and_Tables:
         doc = DocxDocument(self.file_path)
         blocks: list[dict] = []
         current_section = "root"
+        toc_mode = False
+        has_real_section = False
         table_seq = 0
         for child in doc.element.body:
             tag = child.tag.split("}")[-1]
@@ -336,13 +456,47 @@ class sf_DataProcessing_keywords_512_chunk_and_Tables:
                 if not text.strip():
                     continue
                 style_name = (paragraph.style.name if paragraph.style is not None else "") or ""
-                if style_name.lower().startswith("heading"):
-                    current_section = self.normalize_text(text)
+                block_type, flags, toc_mode = self._classify_paragraph_block(
+                    text=text,
+                    style_name=style_name,
+                    current_section=current_section,
+                    toc_mode=toc_mode,
+                    has_real_section=has_real_section,
+                )
+                normalized_text = self.normalize_text(text)
+
+                if block_type == "heading" and not flags.get("is_toc"):
+                    current_section = normalized_text
+                    has_real_section = True
+                    if not self.skip_headings:
+                        blocks.append(
+                            {
+                                "kind": "paragraph",
+                                "text": normalized_text,
+                                "section": current_section,
+                                "block_type": "heading",
+                                "flags": flags,
+                            }
+                        )
+                    else:
+                        self._debug_skipped_counts["heading"] += 1
+                    continue
+
+                if block_type in {"heading", "toc_line"} and flags.get("is_toc") and self.skip_toc:
+                    self._debug_skipped_counts["toc"] += 1
+                    continue
+
+                if block_type == "boilerplate":
+                    self._debug_skipped_counts["boilerplate"] += 1
+                    continue
+
                 blocks.append(
                     {
                         "kind": "paragraph",
-                        "text": text,
+                        "text": normalized_text,
                         "section": current_section,
+                        "block_type": block_type,
+                        "flags": flags,
                     }
                 )
             elif tag == "tbl":
@@ -473,10 +627,39 @@ class sf_DataProcessing_keywords_512_chunk_and_Tables:
         raise ValueError(f"Неподдерживаемый формат файла: {ext}")
 
     def _split_text_chunks(self, text: str) -> list[str]:
-        """Разбивает нормализованный текст на чанки ограниченного размера."""
-        if not text:
+        """Разбивает только длинные агрегированные буферы, не трогая короткие."""
+        normalized_text = self.normalize_text(text)
+        if not normalized_text:
             return []
-        return [self.normalize_text(chunk) for chunk in self.text_splitter.split_text(text) if self.normalize_text(chunk)]
+        if len(normalized_text) <= self.max_chunk_chars:
+            return [normalized_text]
+        return [
+            self.normalize_text(chunk)
+            for chunk in self.text_splitter.split_text(normalized_text)
+            if self.normalize_text(chunk)
+        ]
+
+    def _emit_buffer_chunks(
+        self,
+        buffer_parts: list[str],
+        section: str,
+        chunk_index: int,
+        final_docs: list[LangDocument],
+        flags: dict | None = None,
+    ) -> int:
+        """Сбрасывает буфер абзацев в один или несколько paragraph-чанков."""
+        if not buffer_parts:
+            return chunk_index
+        joined = self.normalize_text("\n\n".join(buffer_parts))
+        if not joined:
+            return chunk_index
+        for chunk_text in self._split_text_chunks(joined):
+            metadata = self._new_metadata(chunk_index, "paragraph", section)
+            if flags:
+                metadata["flags"] = flags
+            final_docs.append(LangDocument(page_content=chunk_text, metadata=metadata))
+            chunk_index += 1
+        return chunk_index
 
     def separate_file(self):
         """Полный пайплайн clean_text -> normalize_text -> chunk_text."""
@@ -494,8 +677,13 @@ class sf_DataProcessing_keywords_512_chunk_and_Tables:
                         "file_path": self.file_path,
                         "parser_class": self.__class__.__name__,
                         "doc_id": self.doc_id,
-                        "chunk_size": self.chunk_size,
+                        "target_chunk_chars": self.target_chunk_chars,
+                        "max_chunk_chars": self.max_chunk_chars,
+                        "min_chunk_chars": self.min_chunk_chars,
                         "chunk_overlap": self.chunk_overlap,
+                        "skip_toc": self.skip_toc,
+                        "skip_front_matter": self.skip_front_matter,
+                        "skip_headings": self.skip_headings,
                     },
                 )
 
@@ -512,16 +700,79 @@ class sf_DataProcessing_keywords_512_chunk_and_Tables:
             final_docs: list[LangDocument] = []
             chunk_index = 0
             table_seq = 0
+            paragraph_buffer: list[str] = []
+            buffer_section = "root"
+            paragraph_flags = {"aggregated": True}
             for block in blocks:
                 kind = block.get("kind")
                 section = block.get("section", "root")
                 if kind == "paragraph":
-                    normalized_text = self.normalize_text(block.get("text", ""))
-                    for chunk_text in self._split_text_chunks(normalized_text):
-                        metadata = self._new_metadata(chunk_index, "paragraph", section)
-                        final_docs.append(LangDocument(page_content=chunk_text, metadata=metadata))
+                    block_type = block.get("block_type", "content_paragraph")
+                    block_flags = block.get("flags", {}) or {}
+                    paragraph_text = self.normalize_text(block.get("text", ""))
+                    if not paragraph_text:
+                        continue
+                    if block_type == "heading":
+                        chunk_index = self._emit_buffer_chunks(
+                            paragraph_buffer,
+                            buffer_section,
+                            chunk_index,
+                            final_docs,
+                            flags=paragraph_flags,
+                        )
+                        paragraph_buffer = []
+                        metadata = self._new_metadata(chunk_index, "heading", section)
+                        metadata["flags"] = {"is_heading": True, **block_flags}
+                        metadata["skip_embedding"] = True
+                        final_docs.append(LangDocument(page_content=paragraph_text, metadata=metadata))
                         chunk_index += 1
+                        continue
+                    if paragraph_buffer and section != buffer_section:
+                        chunk_index = self._emit_buffer_chunks(
+                            paragraph_buffer,
+                            buffer_section,
+                            chunk_index,
+                            final_docs,
+                            flags=paragraph_flags,
+                        )
+                        paragraph_buffer = []
+                    buffer_section = section
+                    if not paragraph_buffer:
+                        paragraph_buffer.append(paragraph_text)
+                        continue
+
+                    current_text = "\n\n".join(paragraph_buffer)
+                    candidate_text = f"{current_text}\n\n{paragraph_text}"
+                    candidate_len = len(candidate_text)
+                    # Основной режим: копим до target, но не выходим за max.
+                    if candidate_len <= self.target_chunk_chars:
+                        paragraph_buffer.append(paragraph_text)
+                        continue
+                    # Если текущий буфер или новый абзац слишком короткий, склеиваем до min.
+                    if candidate_len <= self.max_chunk_chars and len(current_text) < self.min_chunk_chars:
+                        paragraph_buffer.append(paragraph_text)
+                        continue
+                    if candidate_len <= self.max_chunk_chars and len(paragraph_text) < self.min_chunk_chars:
+                        paragraph_buffer.append(paragraph_text)
+                        continue
+
+                    chunk_index = self._emit_buffer_chunks(
+                        paragraph_buffer,
+                        buffer_section,
+                        chunk_index,
+                        final_docs,
+                        flags=paragraph_flags,
+                    )
+                    paragraph_buffer = [paragraph_text]
                 elif kind == "table":
+                    chunk_index = self._emit_buffer_chunks(
+                        paragraph_buffer,
+                        buffer_section,
+                        chunk_index,
+                        final_docs,
+                        flags=paragraph_flags,
+                    )
+                    paragraph_buffer = []
                     table_seq += 1
                     table_chunks = self._build_table_chunks(
                         table_rows=block.get("rows", []),
@@ -540,6 +791,14 @@ class sf_DataProcessing_keywords_512_chunk_and_Tables:
                         )
                         chunk_index += 1
 
+            chunk_index = self._emit_buffer_chunks(
+                paragraph_buffer,
+                buffer_section,
+                chunk_index,
+                final_docs,
+                flags=paragraph_flags,
+            )
+
             if len(final_docs) == 0:
                 metadata = self._new_metadata(0, "error", "root")
                 metadata["error"] = "no_text_or_tables"
@@ -553,6 +812,7 @@ class sf_DataProcessing_keywords_512_chunk_and_Tables:
             if diag_enabled:
                 rag_artifacts.write_json("UP", "chunks", "chunks.json", serialize_documents(final_docs))
                 rag_artifacts.write_text("UP", "chunks", "chunks.txt", combine_page_content(final_docs))
+                rag_artifacts.write_json("UP", "meta", "skipped_blocks.json", self._debug_skipped_counts)
             return final_docs
         except Exception as exc:
             if diag_enabled:
