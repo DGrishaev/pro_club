@@ -253,36 +253,23 @@ class sf_DataProcessing_keywords_512_chunk_and_Tables:
 
     def _detect_header_depth(self, rows: list[list[str]]) -> int:
         """Определяет глубину шапки таблицы (1..max_header_rows)."""
-        if not rows:
-            return 1
-        max_depth = min(self.max_header_rows, len(rows))
-        depth = 1
-        for idx in range(max_depth):
-            row = rows[idx]
-            non_empty = [c for c in row if c.strip()]
-            if not non_empty:
-                continue
-            numeric_like = sum(1 for c in non_empty if re.fullmatch(r"[\d\s.,:/-]+", c))
-            # Если строка в основном текстовая, считаем ее частью заголовка.
-            if numeric_like <= max(1, len(non_empty) // 2):
-                depth = idx + 1
-        return max(1, depth)
+        # Упрощенный режим: шапка таблицы всегда состоит из первой строки.
+        return 1
+
+    def _normalize_header(self, cell: str) -> str:
+        """Нормализует заголовок колонки: trim + переносы + двойные пробелы."""
+        text = (cell or "").replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+        text = re.sub(r"\s{2,}", " ", text)
+        return text.strip()
 
     def _build_headers(self, header_rows: list[list[str]]) -> list[str]:
-        """Нормализует многоуровневую шапку и делает имена колонок уникальными."""
+        """Нормализует шапку таблицы из одной строки и делает имена колонок уникальными."""
         if not header_rows:
             return ["col_1"]
-        cols = len(header_rows[0])
-        levels: list[list[str]] = [[] for _ in range(cols)]
-        for row in header_rows:
-            for col in range(cols):
-                value = (row[col] if col < len(row) else "").strip()
-                if value:
-                    levels[col].append(value)
-
+        first_row = header_rows[0] if header_rows else []
         headers = []
-        for idx, parts in enumerate(levels, start=1):
-            name = " > ".join(parts).strip(" >")
+        for idx, value in enumerate(first_row, start=1):
+            name = self._normalize_header(value)
             headers.append(name or f"col_{idx}")
 
         # Устраняем дубли после нормализации шапки.
@@ -335,7 +322,7 @@ class sf_DataProcessing_keywords_512_chunk_and_Tables:
         normalized_rows = self._carry_forward_empty_cells(self._normalize_row_width(table_rows))
         if not normalized_rows:
             return []
-        header_depth = self._detect_header_depth(normalized_rows)
+        header_depth = 1
         header_rows = normalized_rows[:header_depth]
         data_rows = normalized_rows[header_depth:] if len(normalized_rows) > header_depth else []
         headers = self._build_headers(header_rows)
