@@ -170,7 +170,7 @@ class s_default:
             )
             raise
 
-class k_five:
+class s_k_five:
     def __init__(self, prompt, user_name, vectordb):
         self.prompt = prompt
         self.user_name = user_name
@@ -189,11 +189,6 @@ class k_five:
                 {"user_name": self.user_name, "k": k},
             )
             raise
-
-
-class s_k_five(k_five):
-    """Совместимость с конфигом class_name_search=s_k_five."""
-
 
 class s_hybrid_light:
     """Легкая двухстадийная стратегия поиска для кодовых/справочных запросов."""
