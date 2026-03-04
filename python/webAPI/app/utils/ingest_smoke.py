@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from collections import Counter
 from statistics import mean
 
@@ -57,11 +58,18 @@ def main() -> None:
         )
 
     heading_chunks = types.get("heading", 0)
-    toc_marked = sum(
-        1
-        for doc in chunks
-        if ((getattr(doc, "metadata", {}) or {}).get("flags", {}) or {}).get("is_toc") is True
-    )
+    toc_marked = 0
+    for doc in chunks:
+        meta = getattr(doc, "metadata", {}) or {}
+        flags_raw = meta.get("flags_json")
+        if not flags_raw:
+            continue
+        try:
+            flags = json.loads(flags_raw)
+        except Exception:
+            continue
+        if isinstance(flags, dict) and flags.get("is_toc") is True:
+            toc_marked += 1
     print(
         "Проверка heading/toc: "
         f"heading_chunks={heading_chunks}, toc_marked_chunks={toc_marked} "

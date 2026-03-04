@@ -1,6 +1,7 @@
 # имена классов должны начинаться с sf_
 # и отображать основные характеристики (по усмотрению разработчика)
 import os, re, inspect, hashlib
+import json
 from pathlib import Path
 import fitz
 from abc import ABC, abstractmethod
@@ -436,6 +437,22 @@ class sf_DataProcessing_keywords_512_chunk_and_Tables:
             "section_path": section or "root",
         }
 
+    def _metadata_safe(self, metadata: dict) -> dict:
+        """Приводит metadata к типам, которые поддерживает Chroma."""
+        safe: dict = {}
+        for key, value in (metadata or {}).items():
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                safe[key] = value
+            elif isinstance(value, list):
+                # Chroma поддерживает list примитивов.
+                if all(isinstance(item, (str, int, float, bool)) or item is None for item in value):
+                    safe[key] = value
+                else:
+                    safe[key] = json.dumps(value, ensure_ascii=False)
+            else:
+                safe[key] = json.dumps(value, ensure_ascii=False)
+        return safe
+
     def _parse_docx(self) -> list[dict]:
         """Извлекает абзацы и таблицы из DOCX с сохранением структуры."""
         from docx import Document as DocxDocument
@@ -656,8 +673,8 @@ class sf_DataProcessing_keywords_512_chunk_and_Tables:
         for chunk_text in self._split_text_chunks(joined):
             metadata = self._new_metadata(chunk_index, "paragraph", section)
             if flags:
-                metadata["flags"] = flags
-            final_docs.append(LangDocument(page_content=chunk_text, metadata=metadata))
+                metadata["flags_json"] = json.dumps(flags, ensure_ascii=False, sort_keys=True)
+            final_docs.append(LangDocument(page_content=chunk_text, metadata=self._metadata_safe(metadata)))
             chunk_index += 1
         return chunk_index
 
@@ -722,9 +739,15 @@ class sf_DataProcessing_keywords_512_chunk_and_Tables:
                         )
                         paragraph_buffer = []
                         metadata = self._new_metadata(chunk_index, "heading", section)
-                        metadata["flags"] = {"is_heading": True, **block_flags}
+                        metadata["flags_json"] = json.dumps(
+                            {"is_heading": True, **block_flags},
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        )
                         metadata["skip_embedding"] = True
-                        final_docs.append(LangDocument(page_content=paragraph_text, metadata=metadata))
+                        final_docs.append(
+                            LangDocument(page_content=paragraph_text, metadata=self._metadata_safe(metadata))
+                        )
                         chunk_index += 1
                         continue
                     if paragraph_buffer and section != buffer_section:
@@ -786,7 +809,7 @@ class sf_DataProcessing_keywords_512_chunk_and_Tables:
                         final_docs.append(
                             LangDocument(
                                 page_content=self.normalize_text(item["page_content"]),
-                                metadata=metadata,
+                                metadata=self._metadata_safe(metadata),
                             )
                         )
                         chunk_index += 1
